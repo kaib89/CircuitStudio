@@ -19,8 +19,14 @@ body { display: flex; flex-direction: column; }
   background: #ffffff;
   border-bottom: 1px solid #d3dae2;
   flex: 0 0 auto;
-  flex-wrap: wrap;
+  /* Never wrap. A long status line (the net readout can get long) would
+     otherwise push the toolbar onto a second row, shrink the canvas, move the
+     wire out from under the cursor, clear the status again — and flicker. */
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
+
+#toolbar > * { flex: 0 0 auto; }
 
 .brand {
   font-weight: 600;
@@ -73,7 +79,16 @@ body { display: flex; flex-direction: column; }
 
 .group-label { color: #55636f; }
 
-#status { margin-left: auto; color: #6b7885; font-size: 13px; }
+#status {
+  margin-left: auto;
+  color: #6b7885;
+  font-size: 13px;
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 main { position: relative; flex: 1 1 auto; overflow: hidden; }
 

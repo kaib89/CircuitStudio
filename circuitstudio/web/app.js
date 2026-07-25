@@ -88,7 +88,10 @@ async function api(path, body) {
   return data;
 }
 
-function setStatus(msg) { statusEl.textContent = msg; }
+function setStatus(msg) {
+  statusEl.textContent = msg;
+  statusEl.title = msg;   // the line is clipped, so keep the full text reachable
+}
 
 // ── alignment guides ─────────────────────────────────────────────────
 
