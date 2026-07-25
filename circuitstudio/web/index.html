@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CircuitStudio</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header id="toolbar">
+  <span class="brand">CircuitStudio</span>
+
+  <label>Project
+    <select id="projectSelect"></select>
+  </label>
+
+  <button id="btnFit" title="Fit the whole schematic into the view">Fit</button>
+  <button id="btnArrange" title="Discard all positions and lay the schematic out again">Auto-arrange</button>
+  <button id="btnExport" title="Write the SVG next to the project files">Export SVG</button>
+
+  <span class="group" id="alignGroup">
+    <span class="group-label">Align</span>
+    <button id="btnAlignX" title="Same X for all selected parts — they line up with the part you clicked FIRST">column</button>
+    <button id="btnAlignY" title="Same Y for all selected parts — they line up with the part you clicked FIRST">row</button>
+    <button id="btnDistX" title="Space out evenly left to right (the outermost parts stay put)">↔ space</button>
+    <button id="btnDistY" title="Space out evenly top to bottom (the outermost parts stay put)">↕ space</button>
+  </span>
+
+  <label>Grid
+    <select id="gridSelect">
+      <option value="10">10</option>
+      <option value="20" selected>20</option>
+      <option value="25">25</option>
+      <option value="40">40</option>
+    </select>
+  </label>
+
+  <label title="Show or hide the grid dots (stored per project)">
+    <input type="checkbox" id="chkGrid" checked> show
+  </label>
+
+  <label title="Temporarily hide all notes (not stored)">
+    <input type="checkbox" id="chkNotes" checked> Notes
+  </label>
+
+  <span id="status"></span>
+</header>
+
+<main>
+  <svg id="canvas" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <pattern id="gridPattern" patternUnits="userSpaceOnUse" width="20" height="20">
+        <circle cx="0" cy="0" r="0.8" fill="#c9d2dd"/>
+      </pattern>
+    </defs>
+    <rect id="gridRect" fill="url(#gridPattern)"/>
+    <g id="wires"></g>
+    <g id="wireHits"></g>
+    <g id="junctions"></g>
+    <g id="netLabels"></g>
+    <g id="waypoints"></g>
+    <g id="components"></g>
+    <g id="notes"></g>
+    <g id="netPins"></g>
+    <g id="guides"></g>
+    <rect id="band" style="display:none"/>
+  </svg>
+
+  <div id="errors" hidden></div>
+
+  <div id="hint">
+    Drag = move &nbsp;·&nbsp; <b>drag a frame</b> = select &nbsp;·&nbsp;
+    <b>Space</b> or middle-drag = pan &nbsp;·&nbsp;
+    <b>R</b> rotate &nbsp;·&nbsp; <b>M</b> mirror &nbsp;·&nbsp; <b>L</b> lock &nbsp;·&nbsp;
+    <b>Ctrl+Z</b> undo &nbsp;·&nbsp;
+    <b>click a wire</b> = add waypoint &nbsp;·&nbsp; double-click it = remove
+  </div>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

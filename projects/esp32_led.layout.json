@@ -1,0 +1,89 @@
+{
+  "grid": 10,
+  "positions": {
+    "U1": {
+      "x": -290.0,
+      "y": -375.0,
+      "rotation": 0,
+      "flip": false,
+      "locked": false
+    },
+    "R1": {
+      "x": -80.0,
+      "y": -395.0,
+      "rotation": 0,
+      "flip": false,
+      "locked": false
+    },
+    "D1": {
+      "x": 80.0,
+      "y": -395.0,
+      "rotation": 0,
+      "flip": false,
+      "locked": false
+    },
+    "SW1": {
+      "x": 120.0,
+      "y": -100.0,
+      "rotation": 0,
+      "flip": false,
+      "locked": false
+    },
+    "R2": {
+      "x": -250.0,
+      "y": -140.0,
+      "rotation": 0,
+      "flip": false,
+      "locked": false
+    },
+    "VCC1": {
+      "x": -400.0,
+      "y": -115.0,
+      "rotation": 180,
+      "flip": false,
+      "locked": false
+    },
+    "GND1": {
+      "x": -290.0,
+      "y": -220.0,
+      "rotation": 0,
+      "flip": false,
+      "locked": false
+    },
+    "GND2": {
+      "x": 185.0,
+      "y": -245.0,
+      "rotation": 270,
+      "flip": false,
+      "locked": false
+    }
+  },
+  "view": {
+    "x": -780.9812406999912,
+    "y": -540,
+    "w": 1341.9624813999824,
+    "h": 601
+  },
+  "showGrid": false,
+  "wires": {},
+  "notes": {
+    "N1": {
+      "x": -140.0,
+      "y": -230.0,
+      "w": 220,
+      "hidden": false
+    },
+    "N2": {
+      "x": -40.0,
+      "y": -340.0,
+      "w": 160.0,
+      "hidden": false
+    },
+    "N3": {
+      "x": -200.0,
+      "y": -110.0,
+      "w": 220,
+      "hidden": false
+    }
+  }
+}

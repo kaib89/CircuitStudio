@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Your own circuits stay on your machine. Only the demo project is part of the
+# repository — everything else you create in projects/ is ignored, so a private
+# design can never be published by accident.
+projects/*
+!projects/esp32_led.circuit.json
+!projects/esp32_led.layout.json
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

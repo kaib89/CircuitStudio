@@ -1,0 +1,199 @@
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color: #1c2733;
+  background: #eef1f5;
+}
+
+body { display: flex; flex-direction: column; }
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  background: #ffffff;
+  border-bottom: 1px solid #d3dae2;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.brand {
+  font-weight: 600;
+  letter-spacing: .3px;
+  color: #0d4f8b;
+  margin-right: 6px;
+}
+
+#toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #55636f;
+}
+
+#toolbar select {
+  font: inherit;
+  padding: 3px 6px;
+  border: 1px solid #c3ccd6;
+  border-radius: 4px;
+  background: #fff;
+}
+
+#toolbar button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid #c3ccd6;
+  border-radius: 5px;
+  background: #f7f9fb;
+  cursor: pointer;
+}
+
+#toolbar button:hover { background: #e9eff5; border-color: #9fb2c4; }
+#toolbar button:active { background: #dde6ef; }
+
+#toolbar button:disabled {
+  color: #a8b3bd;
+  background: #f3f5f7;
+  border-color: #dde3e9;
+  cursor: default;
+}
+
+.group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 12px;
+  border-left: 1px solid #dde3e9;
+}
+
+.group-label { color: #55636f; }
+
+#status { margin-left: auto; color: #6b7885; font-size: 13px; }
+
+main { position: relative; flex: 1 1 auto; overflow: hidden; }
+
+#canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #ffffff;
+  touch-action: none;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#canvas.panning { cursor: grabbing; }
+
+g.comp { cursor: move; }
+g.comp .hit { fill: transparent; stroke: none; }
+g.comp.selected .hit { fill: #2f81f7; fill-opacity: .10; stroke: #2f81f7; stroke-width: 1; stroke-dasharray: 4 3; }
+g.comp.auto .hit { fill: #ffb020; fill-opacity: .12; stroke: #d98b00; stroke-width: 1; stroke-dasharray: 2 3; }
+g.comp.dragging { opacity: .75; }
+
+g.comp.locked { cursor: not-allowed; }
+g.comp.locked .hit {
+  fill: #8a94a0;
+  fill-opacity: .07;
+  stroke: #8a94a0;
+  stroke-width: 1;
+  stroke-dasharray: 1 4;
+}
+
+#band {
+  fill: #2f81f7;
+  fill-opacity: .10;
+  stroke: #2f81f7;
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+
+g.note { cursor: move; }
+g.note .note-resize {
+  fill: #C8A951;
+  fill-opacity: .55;
+  cursor: ew-resize;
+}
+g.note .note-resize:hover { fill-opacity: 1; }
+g.note .note-toggle {
+  fill: #ffffff;
+  stroke: #C8A951;
+  stroke-width: 1.2;
+  cursor: pointer;
+}
+g.note .note-toggle:hover { fill: #C8A951; }
+g.note .note-toggle-glyph,
+g.note-ghost text { pointer-events: none; user-select: none; }
+g.note-ghost { cursor: pointer; }
+g.note-ghost circle { fill: #FFF9E3; stroke: #C8A951; stroke-width: 1.2; }
+#canvas.netfocus #notes { opacity: .3; }
+
+line.wirehit { stroke: transparent; stroke-width: 14; cursor: crosshair; }
+circle.wp {
+  fill: #ffffff;
+  stroke: #2f81f7;
+  stroke-width: 2;
+  cursor: grab;
+}
+circle.wp:hover { fill: #2f81f7; }
+circle.wp.dragging { cursor: grabbing; fill: #2f81f7; }
+
+line.guide {
+  stroke: #e0007a;
+  stroke-width: 1;
+  stroke-dasharray: 7 5;
+  pointer-events: none;
+}
+
+/* Net focus: everything unrelated fades back so one signal can be followed. */
+#canvas.netfocus #wires line,
+#canvas.netfocus #junctions circle,
+#canvas.netfocus #netLabels { opacity: .15; }
+#canvas.netfocus g.comp { opacity: .35; }
+
+#canvas.netfocus #wires line.hl {
+  opacity: 1;
+  stroke-width: 4;
+}
+#canvas.netfocus g.comp.netmember { opacity: 1; }
+
+#netPins circle {
+  fill: #ffffff;
+  stroke: #e0007a;
+  stroke-width: 2.5;
+  pointer-events: none;
+}
+
+#errors {
+  position: absolute;
+  left: 12px;
+  bottom: 44px;
+  max-width: 46ch;
+  max-height: 30%;
+  overflow: auto;
+  background: #fff4f4;
+  border: 1px solid #e6a3a3;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #8b1d1d;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+#hint {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  color: #7b8794;
+  font-size: 12px;
+  background: rgba(255,255,255,.85);
+  padding: 4px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+}
