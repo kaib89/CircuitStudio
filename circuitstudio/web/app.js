@@ -217,7 +217,11 @@ function setNetFocus(name) {
   const members = new Set();
   const marks = [];
   for (const ref of wire.pins || []) {
-    const [cid, pinName] = String(ref).split('.');
+    // Split on the first dot only — pin names such as "3.3V" contain dots.
+    const s = String(ref);
+    const dot = s.indexOf('.');
+    const cid = dot < 0 ? s : s.slice(0, dot);
+    const pinName = dot < 0 ? '' : s.slice(dot + 1);
     members.add(cid);
     const comp = scene.components.find(c => c.id === cid);
     const pin = comp && comp.pins.find(p => p.name === pinName);
@@ -881,7 +885,7 @@ btnDistY.addEventListener('click', () => distribute('y'));
 document.getElementById('btnFit').addEventListener('click', fitView);
 
 document.getElementById('btnArrange').addEventListener('click', async () => {
-  if (!confirm('Discard all positions and lay out the schematic again?')) return;
+  if (!confirm('Discard all positions (locked parts stay) and lay out the schematic again?')) return;
   pushHistory();
   try {
     applyPayload(await api('/api/autoarrange', {}));

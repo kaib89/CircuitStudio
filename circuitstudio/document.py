@@ -28,20 +28,28 @@ _VCC_NAMES = {"vcc", "vdd", "v+", "5v", "3v3", "3.3v", "9v", "12v", "24v", "vin"
 _GND_NAMES = {"gnd", "vss", "v-", "0v", "agnd", "dgnd", "pgnd"}
 
 
-def net_color(name: str) -> str:
+def is_supply_net(name: str) -> bool:
     n = name.lower().strip()
-    if n in _VCC_NAMES or any(n.startswith(p) for p in ("vcc", "vdd", "v+", "+", "5v", "3v")):
+    return n in _VCC_NAMES or n.startswith(("vcc", "vdd", "v+", "+", "5v", "3v"))
+
+
+def is_ground_net(name: str) -> bool:
+    n = name.lower().strip()
+    return n in _GND_NAMES or n.startswith(("gnd", "vss"))
+
+
+def net_color(name: str) -> str:
+    if is_supply_net(name):
         return "#CC0000"
-    if n in _GND_NAMES or n.startswith("gnd") or n.startswith("vss"):
+    if is_ground_net(name):
         return "#000000"
     return "#333333"
 
 
 def net_width(name: str) -> float:
-    n = name.lower().strip()
-    if n in _GND_NAMES or n.startswith("gnd") or n.startswith("vss"):
+    if is_ground_net(name):
         return 2.5
-    if n in _VCC_NAMES or any(n.startswith(p) for p in ("vcc", "vdd")):
+    if is_supply_net(name):
         return 2.0
     return 1.5
 
@@ -79,6 +87,7 @@ class Project:
                                        "wires": {}, "view": None}
         self.version = 0
         self._circuit_mtime: float = 0.0
+        self._backed_up = False
 
     # ── Paths ────────────────────────────────────────────────────────────────
 
@@ -109,7 +118,10 @@ class Project:
         self.circuit.setdefault("components", [])
         self.circuit.setdefault("nets", [])
         self.circuit.setdefault("notes", [])
+        return self.load_layout()
 
+    def load_layout(self) -> "Project":
+        """Load only layout.json (plus auto-placement for the current circuit)."""
         layout = _read_json(self.layout_path)
         if layout is not None:
             self.layout = layout
@@ -149,13 +161,20 @@ class Project:
         self.version += 1
         return True
 
-    def save_layout(self) -> None:
-        # Keep the previous state around: an accidental auto-arrange or a bad
-        # drag is otherwise unrecoverable once the editor is closed and the
-        # in-memory undo stack is gone.
-        if self.layout_path.exists():
+    def save_layout(self, backup: bool = False) -> None:
+        """Write layout.json, keeping a recoverable copy of an older state.
+
+        The backup is taken on the first save of this session (i.e. the layout
+        as it was when the editor was opened, or before the assistant wrote the
+        circuit) and again whenever `backup` is set, e.g. right before an
+        auto-arrange. Backing up on *every* save would be useless: panning
+        alone saves the view, so the copy would be overwritten within a second
+        of the mistake it is meant to undo.
+        """
+        if (backup or not self._backed_up) and self.layout_path.exists():
             try:
                 self.layout_backup_path.write_bytes(self.layout_path.read_bytes())
+                self._backed_up = True
             except OSError:
                 pass
         _write_json(self.layout_path, self.layout)

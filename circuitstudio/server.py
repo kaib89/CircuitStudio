@@ -196,10 +196,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/autoarrange":
             with self.state.lock:
                 proj = self.state.project
-                proj.layout["positions"] = {}
+                # Locked parts are exactly the ones the user asked to keep.
+                proj.layout["positions"] = {
+                    cid: p for cid, p in proj.layout["positions"].items()
+                    if isinstance(p, dict) and p.get("locked")
+                }
                 proj.layout["wires"] = {}  # old guidance points make no sense now
                 proj.autoplace()
-                proj.save_layout()
+                proj.save_layout(backup=True)
                 payload = self.state.scene_payload()
             self._json(payload)
             return

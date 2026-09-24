@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .document import Project, net_color, net_width
+from .document import Project, is_ground_net, is_supply_net, net_color, net_width
 from .router import (
     ROUTE_GRID, Segment, build_obstacle_grid, find_junctions, route_net_edges,
 )
@@ -50,11 +50,9 @@ def wrap_note_text(text: str, width: float) -> list[str]:
 
 def _net_priority(name: str, pin_count: int) -> tuple[int, int]:
     """GND first, then supply rails, then by size — big nets get clean runs."""
-    n = name.lower()
-    if n.startswith("gnd") or n.startswith("vss") or n == "0v":
+    if is_ground_net(name):
         return (0, -pin_count)
-    if (n.startswith("vcc") or n.startswith("vdd") or n.startswith("v+")
-            or n in {"5v", "3v3", "3.3v", "9v", "12v"}):
+    if is_supply_net(name):
         return (1, -pin_count)
     return (2, -pin_count)
 
@@ -191,8 +189,8 @@ class Scene:
         boxes = []
         for c in self.components:
             m = 6
-            boxes.append((c.x - c.width / 2 + m, c.y - c.height / 2 + m,
-                          c.x + c.width / 2 - m, c.y + c.height / 2 - m))
+            x0, y0, x1, y1 = c.extent_bbox()
+            boxes.append((x0 + m, y0 + m, x1 - m, y1 - m))
 
         def inside_any(x: float, y: float) -> bool:
             return any(x0 < x < x1 and y0 < y < y1 for x0, y0, x1, y1 in boxes)
@@ -235,10 +233,20 @@ class Scene:
     def bounds(self) -> tuple[float, float, float, float]:
         if not self.components:
             return (0.0, 0.0, 400.0, 300.0)
-        x0 = min(c.x - c.width / 2 for c in self.components)
-        y0 = min(c.y - c.height / 2 for c in self.components)
-        x1 = max(c.x + c.width / 2 for c in self.components)
-        y1 = max(c.y + c.height / 2 for c in self.components)
+        boxes = [c.extent_bbox() for c in self.components]
+        x0 = min(b[0] for b in boxes)
+        y0 = min(b[1] for b in boxes)
+        x1 = max(b[2] for b in boxes)
+        y1 = max(b[3] for b in boxes)
+        # A* may detour around a part and leave the component area.
+        for segs in self.wires:
+            for (ax, ay), (bx, by) in segs:
+                x0, x1 = min(x0, ax, bx), max(x1, ax, bx)
+                y0, y1 = min(y0, ay, by), max(y1, ay, by)
+        for lab in self.net_labels:
+            bg = lab["bg"]
+            x0, y0 = min(x0, bg["x"]), min(y0, bg["y"])
+            x1, y1 = max(x1, bg["x"] + bg["w"]), max(y1, bg["y"] + bg["h"])
         for n in self.notes:
             if n["hidden"]:
                 continue

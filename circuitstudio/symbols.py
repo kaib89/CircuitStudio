@@ -45,7 +45,21 @@ class Component:
 
     def body_bbox(self) -> tuple[float, float, float, float]:
         """Axis-aligned body bbox in absolute coords, accounting for rotation."""
-        bx0, by0, bx1, by1 = self._body_local()
+        return self._to_abs_bbox(self._body_local())
+
+    def _extent_local(self) -> tuple[float, float, float, float]:
+        """Everything the symbol draws (leads, labels), unrotated."""
+        w, h = self.width, self.height
+        return (-w / 2, -h / 2, w / 2, h / 2)
+
+    def extent_bbox(self) -> tuple[float, float, float, float]:
+        """Axis-aligned bbox of the whole drawn symbol, accounting for rotation
+        and mirroring — `width`/`height` alone are only right at 0°/180°."""
+        return self._to_abs_bbox(self._extent_local())
+
+    def _to_abs_bbox(self, local: tuple[float, float, float, float]
+                     ) -> tuple[float, float, float, float]:
+        bx0, by0, bx1, by1 = local
         if self.flip:
             bx0, bx1 = -bx1, -bx0
         if self.rotation:
@@ -120,6 +134,12 @@ def xml_escape(s) -> str:
                   .replace('"', "&quot;"))
 
 
+def _fmt(v: float) -> float | int:
+    """Drop float noise such as 129.99999999999997 from computed coordinates."""
+    v = round(v, 2)
+    return int(v) if v == int(v) else v
+
+
 def _line(x1, y1, x2, y2, stroke="#000000", sw=2) -> str:
     return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{stroke}" stroke-width="{sw}" stroke-linecap="round"/>'
 
@@ -163,6 +183,27 @@ def _label(x, y, txt, rotation: int = 0, anchor: str = "middle",
     rot_attr = f' transform="rotate({counter} {x} {y})"' if counter else ""
     return (f'<text x="{x}" y="{y}" text-anchor="{anchor}" font-family="sans-serif" '
             f'font-size="{size}" fill="{color}"{rot_attr}>{body}</text>')
+
+
+def _corner_label(x, y, txt, rotation: int, size: int = 10,
+                  color: str = "#333333") -> str:
+    """Label hung off a corner of a chip outline, reading away from the body.
+
+    Used when pins leave the top or bottom edge: a centred label would sit
+    right on the middle pin's wire. The anchor is chosen from where the corner
+    ends up on screen after rotation, so the text never runs back over the
+    body. Mirroring swaps the anchor again (see mirror_symbol).
+    """
+    sx, _ = _rotate(x, y, rotation)
+    anchor = "start" if sx >= 0 else "end"
+    text = _label(_fmt(x), _fmt(y), txt, rotation=rotation, anchor=anchor,
+                  size=size, color=color)
+    # Out here a wire may still pass underneath; a white halo keeps the text
+    # readable (symbols are drawn above the wires).
+    return text.replace(
+        ' font-family=',
+        ' stroke="#FFFFFF" stroke-width="3" stroke-linejoin="round" '
+        'paint-order="stroke" font-family=', 1)
 
 
 # ── Two-terminal base ───────────────────────────────────────────────────────
@@ -538,6 +579,11 @@ class IC(Component):
         n_tb = max(len(top), len(bottom), 1)
         self._n_lr = n_lr
         self._n_tb = n_tb
+        # Pin tips in px. The stubs are drawn out to exactly these points, so a
+        # wire always ends on the symbol even though the tips sit further out
+        # than the body edge + a fixed lead would put them.
+        self._tip_x = (n_tb * 0.6 + 0.8) * 50
+        self._tip_y = (n_lr * 0.6 + 0.8) * 50
 
         pins: list[PinDef] = []
         for i, name in enumerate(left):
@@ -577,22 +623,23 @@ class IC(Component):
         parts = [_rect(x0, y0, W, H)]
         # Pin lines drawn at the same positions used by the PinDef offsets
         # (centered, 40px spacing), so wires terminate exactly on the symbol.
+        tx, ty = _fmt(self._tip_x), _fmt(self._tip_y)
         for i, name in enumerate(self._left):
             yp = (i - (len(self._left) - 1) / 2) * 40
             parts += [
-                _line(x0 - 25, yp, x0, yp),
+                _line(-tx, yp, x0, yp),
                 _label(x0 + 4, yp + 4, name, rotation=r, anchor="start", size=9),
             ]
         for i, name in enumerate(self._right):
             yp = (i - (len(self._right) - 1) / 2) * 40
             parts += [
-                _line(x0 + W, yp, x0 + W + 25, yp),
+                _line(x0 + W, yp, tx, yp),
                 _label(x0 + W - 4, yp + 4, name, rotation=r, anchor="end", size=9),
             ]
         for i, name in enumerate(self._top):
             xp = (i - (len(self._top) - 1) / 2) * 40
             parts += [
-                _line(xp, y0 - 25, xp, y0),
+                _line(xp, -ty, xp, y0),
                 # label INSIDE box, just below top edge — same convention as
                 # left/right labels (which are inside) so wires don't draw
                 # across the text
@@ -601,25 +648,31 @@ class IC(Component):
         for i, name in enumerate(self._bottom):
             xp = (i - (len(self._bottom) - 1) / 2) * 40
             parts += [
-                _line(xp, y0 + H, xp, y0 + H + 25),
+                _line(xp, y0 + H, xp, ty),
                 _label(xp, y0 + H - 6, name, rotation=r, size=9),
             ]
-        # comp_id above box (above top pin lines if any)
-        cid_y = y0 - (32 if self._top else 12)
-        parts.append(_label(0, cid_y, self.comp_id, rotation=r, size=11))
-        # value below box (below bottom pin lines if any)
+        # comp_id above the box, value below it — moved out to the corners
+        # when pins leave that edge, so no wire runs through the text
+        if self._top:
+            parts.append(_corner_label(x0 - 4, y0 - 6, self.comp_id, r, size=11))
+        else:
+            parts.append(_label(0, y0 - 12, self.comp_id, rotation=r, size=11))
         if self.value:
-            val_y = y0 + H + (32 if self._bottom else 18)
-            parts.append(_label(0, val_y, self.value, rotation=r, size=10, color="#666666"))
+            if self._bottom:
+                parts.append(_corner_label(x0 + W + 4, y0 + H + 14, self.value, r,
+                                           color="#666666"))
+            else:
+                parts.append(_label(0, y0 + H + 18, self.value, rotation=r,
+                                    size=10, color="#666666"))
         return "\n".join(parts)
 
     @property
     def width(self) -> float:
-        return max(self._n_tb * 40 + 70, 130)
+        return max(self._n_tb * 40 + 70, 130, 2 * self._tip_x + 10)
 
     @property
     def height(self) -> float:
-        return max(self._n_lr * 40 + 90, 130)
+        return max(self._n_lr * 40 + 90, 130, 2 * self._tip_y + 40)
 
 
 # ── Sources ───────────────────────────────────────────────────────────────────
@@ -933,6 +986,12 @@ class Label(Component):
             _label((W + 16) // 2, 4, name, rotation=r, color="#000000"),
         ])
 
+    def _extent_local(self) -> tuple[float, float, float, float]:
+        # The tag hangs off to the right of its tip, not around the centre.
+        name = self.value or self.comp_id
+        W = max(len(name) * 7 + 16, 44)
+        return (-4, -14, W + 12, 14)
+
     @property
     def width(self) -> float:
         return max(len(self.value) * 7 + 32, 70)
@@ -970,6 +1029,9 @@ class _Board(Component):
 
         W_units = max(n_tb * 0.8, 2)
         H_units = max(n_lr * 0.8, 2)
+        # Pin tips in px; the stubs are drawn out to these (see IC).
+        self._tip_x = (W_units / 2 + 0.8) * 50
+        self._tip_y = (H_units / 2 + 0.8) * 50
 
         for i, name in enumerate(left):
             dy = (i - (len(left) - 1) / 2) * 0.8
@@ -1000,24 +1062,26 @@ class _Board(Component):
         x0, y0 = -W // 2, -H // 2
         parts = [_rect(x0, y0, W, H, fill="#f0f0f0")]
 
+        tx, ty = _fmt(self._tip_x), _fmt(self._tip_y)
+
         def draw_side(names: list[str], side: str) -> None:
             n = len(names)
             for i, name in enumerate(names):
                 if side == "left":
                     yp = (i - (n - 1) / 2) * 40
-                    parts.append(_line(x0 - 25, yp, x0, yp))
+                    parts.append(_line(-tx, yp, x0, yp))
                     parts.append(_label(x0 + 4, yp + 4, name, rotation=r, anchor="start", size=8))
                 elif side == "right":
                     yp = (i - (n - 1) / 2) * 40
-                    parts.append(_line(x0 + W, yp, x0 + W + 25, yp))
+                    parts.append(_line(x0 + W, yp, tx, yp))
                     parts.append(_label(x0 + W - 4, yp + 4, name, rotation=r, anchor="end", size=8))
                 elif side == "top":
                     xp = (i - (n - 1) / 2) * 40
-                    parts.append(_line(xp, y0 - 25, xp, y0))
+                    parts.append(_line(xp, -ty, xp, y0))
                     parts.append(_label(xp, y0 + 12, name, rotation=r, size=8))
                 elif side == "bottom":
                     xp = (i - (n - 1) / 2) * 40
-                    parts.append(_line(xp, y0 + H, xp, y0 + H + 25))
+                    parts.append(_line(xp, y0 + H, xp, ty))
                     parts.append(_label(xp, y0 + H - 6, name, rotation=r, size=8))
 
         draw_side(self._left, "left")
@@ -1025,19 +1089,25 @@ class _Board(Component):
         draw_side(self._top, "top")
         draw_side(self._bottom, "bottom")
 
-        cid_y = y0 - (32 if self._top else 12)
-        parts.append(_label(0, cid_y, self.comp_id, rotation=r, size=11))
-        val_y = y0 + H + (32 if self._bottom else 18)
-        parts.append(_label(0, val_y, self.value, rotation=r, size=10, color="#666666"))
+        if self._top:
+            parts.append(_corner_label(x0 - 4, y0 - 6, self.comp_id, r, size=11))
+        else:
+            parts.append(_label(0, y0 - 12, self.comp_id, rotation=r, size=11))
+        if self._bottom:
+            parts.append(_corner_label(x0 + W + 4, y0 + H + 14, self.value, r,
+                                       color="#666666"))
+        else:
+            parts.append(_label(0, y0 + H + 18, self.value, rotation=r,
+                                size=10, color="#666666"))
         return "\n".join(parts)
 
     @property
     def width(self) -> float:
-        return self._W + 70.0
+        return max(self._W + 70.0, 2 * self._tip_x + 10)
 
     @property
     def height(self) -> float:
-        return self._H + 90.0
+        return max(self._H + 90.0, 2 * self._tip_y + 40)
 
 
 class RPi(_Board):

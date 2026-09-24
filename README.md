@@ -78,8 +78,9 @@ Tools: `list_projects`, `list_component_types`, `get_circuit`, `write_circuit`,
 `open_editor`.
 
 `write_circuit` validates before it writes. Unknown component types, wrong pin
-names, bad note anchors and duplicate IDs are rejected with a precise message
-and nothing is saved — which gives the model a chance to correct itself instead
+names, bad note anchors, duplicate IDs, duplicate net names and pins that sit in
+two nets at once (a short) are rejected with a precise message and nothing is
+saved — which gives the model a chance to correct itself instead
 of leaving a broken file behind:
 
 ```
@@ -135,7 +136,7 @@ ICs, connectors and board symbols (`esp32`, `rpi`, `pico`, `arduino_uno`,
 | Move | drag a part |
 | Select several | drag a frame on empty space, or shift-click |
 | Pan / zoom | space or middle-drag / mouse wheel |
-| Rotate, mirror, lock | `R`, `M`, `L` |
+| Rotate, mirror, lock | `R`, `M`, `L` — locked parts also survive **Auto-arrange** |
 | Nudge | arrow keys (shift = 5 steps) |
 | Undo | `Ctrl+Z` |
 | Align / distribute | toolbar, relative to the first selected part |
@@ -179,6 +180,14 @@ projects/        your circuits
 
 The editor and the exported SVG are generated from the same geometry, so what
 you arrange is exactly what you get.
+
+## Tests
+
+```
+python -m unittest discover tests
+```
+
+Standard library only, like the rest of the project.
 
 ## Credits
 

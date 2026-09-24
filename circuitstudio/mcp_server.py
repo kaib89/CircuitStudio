@@ -177,17 +177,42 @@ def _validate(circuit: dict[str, Any]) -> list[str]:
             errors.append(f"Duplicate part ID: {cid}")
             continue
         seen.add(cid)
+        if "." in cid:
+            # Pin references are split at the first dot, so 'U.1.GND' would
+            # silently point at a part called 'U'.
+            errors.append(f"Part ID '{cid}' must not contain a '.'")
+            continue
         try:
-            comps[cid] = build_component(spec)
-        except ValueError as exc:
-            errors.append(str(exc))
+            comp = build_component(spec)
+        except (ValueError, TypeError, AttributeError) as exc:
+            errors.append(f"Part '{cid}': {exc}")
+            continue
+        comps[cid] = comp
+        names = [p.name for p in comp.pins]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            # Only the first pin of that name would ever be connected.
+            errors.append(
+                f"Part '{cid}': pin name(s) {', '.join(dupes)} used more than "
+                f"once — give each pin a unique name (e.g. GND_1, GND_2)")
 
+    owner: dict[str, str] = {}      # pin ref -> first net that uses it
+    net_names: set[str] = set()
     for net in circuit.get("nets", []):
         if not isinstance(net, dict):
             errors.append(f"Net is not an object: {net!r}")
             continue
-        nname = net.get("name", "?")
-        for ref in net.get("pins", []):
+        nname = str(net.get("name", "?"))
+        if nname in net_names:
+            errors.append(
+                f"Duplicate net name '{nname}' — nets with the same name are "
+                f"one node, so merge their pins into a single net")
+        net_names.add(nname)
+        pins = net.get("pins", [])
+        if not isinstance(pins, list):
+            errors.append(f"Net '{nname}': 'pins' must be a list")
+            continue
+        for ref in pins:
             ref = str(ref)
             if "." not in ref:
                 errors.append(f"Net '{nname}': '{ref}' is not an 'ID.Pin' reference")
@@ -195,7 +220,8 @@ def _validate(circuit: dict[str, Any]) -> list[str]:
             cid, pin = ref.split(".", 1)
             comp = comps.get(cid)
             if comp is None:
-                errors.append(f"Net '{nname}': part '{cid}' does not exist")
+                if cid not in seen:
+                    errors.append(f"Net '{nname}': part '{cid}' does not exist")
                 continue
             try:
                 comp.pin(pin)
@@ -204,6 +230,12 @@ def _validate(circuit: dict[str, Any]) -> list[str]:
                 errors.append(
                     f"Net '{nname}': '{cid}' has no pin '{pin}'. "
                     f"Available: {available}")
+                continue
+            first = owner.setdefault(ref, nname)
+            if first != nname:
+                errors.append(
+                    f"Pin '{ref}' is in net '{first}' and in net '{nname}' — "
+                    f"that shorts both nets; merge them or fix the pin")
 
     seen_notes: set[str] = set()
     for note in circuit.get("notes", []) or []:
@@ -291,7 +323,9 @@ def tool_write_circuit(args: dict[str, Any]) -> str:
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     project = Project(PROJECTS_DIR, name)
     if project.circuit_path.exists() or project.layout_path.exists():
-        project.load()          # keep the existing layout
+        # Only the layout matters here — the circuit is about to be replaced,
+        # and a broken circuit.json must not block the write that fixes it.
+        project.load_layout()
     circuit.setdefault("title", name)
     project.circuit = circuit
     project.save_circuit()
@@ -323,6 +357,12 @@ def tool_open_editor(args: dict[str, Any]) -> str:
         [sys.executable, "-m", "circuitstudio", name],
         cwd=str(ROOT),
         creationflags=creationflags,
+        # Our stdout is the JSON-RPC channel. Without a new console (anything
+        # but Windows) the editor would inherit it and its startup banner
+        # would corrupt the protocol stream.
+        stdin=subprocess.DEVNULL,
+        stdout=None if creationflags else subprocess.DEVNULL,
+        start_new_session=not creationflags,
     )
     return (f"Editor for '{name}' started — the browser opens automatically. "
             f"The console window stays open; closing it stops the editor.")
@@ -400,12 +440,20 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
 def main() -> int:
     stdout = sys.stdout.buffer
     for raw in sys.stdin.buffer:
-        line = raw.decode("utf-8").strip()
+        try:
+            line = raw.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            continue
         if not line:
             continue
         try:
             msg = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if not isinstance(msg, dict):
+            stdout.write((json.dumps(_error(None, -32600, "Invalid Request"))
+                          + "\n").encode("utf-8"))
+            stdout.flush()
             continue
         try:
             response = handle(msg)
