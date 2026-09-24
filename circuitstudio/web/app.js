@@ -153,6 +153,26 @@ function pinSnap(dx, dy) {
   return { corrX, corrY, gx, gy };
 }
 
+/** Where a waypoint dropped at (x, y) should really go: onto the x or y line
+ *  of a nearby pin if there is one (so the wire runs straight into it),
+ *  otherwise onto the grid. Returns the point plus guide lines to show. */
+function snapWaypoint(x, y, upp) {
+  const tol = Math.max(SNAP_PX * upp, grid * 0.75);
+  let bx = null, by = null, dxBest = tol, dyBest = tol;
+  for (const c of scene.components) {
+    for (const p of c.pins) {
+      const ddx = Math.abs(p.x - x), ddy = Math.abs(p.y - y);
+      if (ddx <= dxBest) { dxBest = ddx; bx = p.x; }
+      if (ddy <= dyBest) { dyBest = ddy; by = p.y; }
+    }
+  }
+  return {
+    x: bx !== null ? bx : snap(x),
+    y: by !== null ? by : snap(y),
+    gx: bx, gy: by,
+  };
+}
+
 // ── view ───────────────────────────────────────────────────────────────────
 
 function applyView() {
@@ -656,11 +676,11 @@ canvas.addEventListener('pointermove', evt => {
     const dy = (evt.clientY - wpDrag.sy) * wpDrag.upp;
     if (Math.abs(dx) > 1 || Math.abs(dy) > 1) wpDrag.moved = true;
     const o = wpDrag.points[wpDrag.index];
-    const nx = snap(o[0] + dx);
-    const ny = snap(o[1] + dy);
-    wpDrag.el.setAttribute('cx', nx);
-    wpDrag.el.setAttribute('cy', ny);
-    wpDrag.target = [nx, ny];
+    const s = snapWaypoint(o[0] + dx, o[1] + dy, wpDrag.upp);
+    showGuides(s.gx, s.gy);
+    wpDrag.el.setAttribute('cx', s.x);
+    wpDrag.el.setAttribute('cy', s.y);
+    wpDrag.target = [s.x, s.y];
   } else if (drag) {
     const dx = (evt.clientX - drag.sx) * drag.upp;
     const dy = (evt.clientY - drag.sy) * drag.upp;
@@ -719,6 +739,7 @@ canvas.addEventListener('pointerup', async evt => {
   if (wpDrag) {
     const d = wpDrag;
     wpDrag = null;
+    clearGuides();
     if (d.moved && d.target) {
       pushHistory();
       const points = d.points.map(p => [p[0], p[1]]);
@@ -739,8 +760,9 @@ canvas.addEventListener('pointerup', async evt => {
     if (edge) {
       pushHistory();
       const p = toUser(evt);
+      const s = snapWaypoint(p.x, p.y, viewMetrics().upp);
       const points = edge.waypoints.map(q => [q[0], q[1]]);
-      points.splice(c.leg, 0, [snap(p.x), snap(p.y)]);
+      points.splice(c.leg, 0, [s.x, s.y]);
       await postWaypoints(c.key, points);
     }
     return;

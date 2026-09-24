@@ -151,7 +151,8 @@ ICs, connectors and board symbols (`esp32`, `rpi`, `pico`, `arduino_uno`,
 | Trace a net | hover a wire — the whole net stays lit and its pins are listed |
 | Export | **Export SVG**, written next to the project |
 
-Dragging snaps to the grid, but pin alignment wins over the grid: when a pin
+Dragging snaps to the grid, but pin alignment wins over the grid (for parts
+and for wire waypoints alike): when a pin
 lines up with a pin of another part, a guide appears and it snaps exactly.
 That matters because pin pitches differ between symbols — without it, some pins
 could never be aligned and wires would zigzag for no reason.

@@ -207,6 +207,16 @@ class RoutingTests(TmpProjects):
         self.assertEqual(scene.rerouted, sum(len(e) for e in scene.net_edges))
 
 
+class WaypointTests(TmpProjects):
+    def test_off_grid_waypoint_is_kept(self) -> None:
+        """The editor snaps waypoints to pin lines, which may be off the grid."""
+        p = self.project([{"id": "R1", "type": "resistor"}])
+        p.set_waypoints("A.1|B.2", [[300, 105], [12.345, 7.0]])
+        self.assertEqual(p.layout["wires"]["A.1|B.2"], [[300, 105], [12.3, 7.0]])
+        p.set_waypoints("A.1|B.2", [])
+        self.assertNotIn("A.1|B.2", p.layout["wires"])
+
+
 class LayoutBackupTests(TmpProjects):
     def test_backup_survives_later_saves(self) -> None:
         p = self.project([{"id": "R1", "type": "resistor"}])

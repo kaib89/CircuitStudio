@@ -288,15 +288,20 @@ class Project:
 
         `edge` is the key produced by router.edge_key, e.g. "R1.2|U1.DIS".
         An empty list removes the guidance and returns the wire to auto-routing.
+
+        Snapping is the editor's job (grid, or a pin's x/y when one is close):
+        pins are often off the grid, and forcing waypoints onto it would put a
+        jog into every wire that should run straight into such a pin.
         """
         wires: dict[str, Any] = self.layout.setdefault("wires", {})
-        grid = max(1, int(self.layout.get("grid", DEFAULT_GRID)))
         cleaned: list[list[float]] = []
         for p in points:
             if not isinstance(p, (list, tuple)) or len(p) != 2:
                 continue
-            cleaned.append([round(float(p[0]) / grid) * grid,
-                            round(float(p[1]) / grid) * grid])
+            try:
+                cleaned.append([round(float(p[0]), 1), round(float(p[1]), 1)])
+            except (TypeError, ValueError):
+                continue
         if cleaned:
             wires[edge] = cleaned
         else:
