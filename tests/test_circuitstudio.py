@@ -267,6 +267,59 @@ class McpTests(TmpProjects):
             "components": [{"id": "R1", "type": "resistor"}], "nets": []}})
         self.assertTrue(text.startswith("Written"), text)
 
+    def base(self) -> None:
+        mcp_server.tool_write_circuit({"project": "t", "circuit": {
+            "components": [{"id": "R1", "type": "resistor"},
+                           {"id": "R2", "type": "resistor"},
+                           {"id": "GND1", "type": "ground"}],
+            "nets": [{"name": "mid", "pins": ["R1.2", "R2.1"]},
+                     {"name": "GND", "pins": ["R2.2", "GND1.pin"]}]}})
+
+    def circuit(self) -> dict:
+        return json.loads((self.dir / "t.circuit.json").read_text(encoding="utf-8"))
+
+    def test_update_adds_connects_and_removes(self) -> None:
+        self.base()
+        text = mcp_server.tool_update_circuit({"project": "t", "changes": {
+            "upsert_components": [{"id": "C1", "type": "capacitor", "value": "100nF"}],
+            "connect": [{"net": "mid", "pins": ["C1.1"]},
+                        {"net": "GND", "pins": ["C1.2"]}],
+            "remove_components": ["R1"],
+        }})
+        self.assertIn("Written", text)
+        self.assertIn("removed part R1 and its connections R1.2", text)
+        c = self.circuit()
+        self.assertEqual([x["id"] for x in c["components"]], ["R2", "GND1", "C1"])
+        nets = {n["name"]: n["pins"] for n in c["nets"]}
+        self.assertEqual(nets, {"mid": ["R2.1", "C1.1"],
+                                "GND": ["R2.2", "GND1.pin", "C1.2"]})
+
+    def test_connect_moves_a_pin_instead_of_shorting(self) -> None:
+        self.base()
+        mcp_server.tool_update_circuit({"project": "t", "changes": {
+            "connect": [{"net": "GND", "pins": ["R2.1"]}]}})
+        nets = {n["name"]: n["pins"] for n in self.circuit()["nets"]}
+        self.assertEqual(nets["mid"], ["R1.2"])
+        self.assertIn("R2.1", nets["GND"])
+
+    def test_invalid_update_writes_nothing(self) -> None:
+        self.base()
+        before = self.circuit()
+        text = mcp_server.tool_update_circuit({"project": "t", "changes": {
+            "connect": [{"net": "mid", "pins": ["R9.1"]}]}})
+        self.assertTrue(text.startswith("NOT written"), text)
+        self.assertEqual(self.circuit(), before)
+
+    def test_update_keeps_layout(self) -> None:
+        self.base()
+        p = Project(self.dir, "t").load()
+        p.set_positions({"R1": {"x": 400, "y": 400}})
+        p.save_layout()
+        mcp_server.tool_update_circuit({"project": "t", "changes": {
+            "upsert_components": [{"id": "R1", "type": "resistor", "value": "1k"}]}})
+        layout = json.loads((self.dir / "t.layout.json").read_text(encoding="utf-8"))
+        self.assertEqual(layout["positions"]["R1"]["x"], 400)
+
     def test_transport_survives_non_object_message(self) -> None:
         msgs = "[1,2]\n" + json.dumps({"jsonrpc": "2.0", "id": 7, "method": "ping"}) + "\n"
         out = subprocess.run([sys.executable, str(ROOT / "circuitstudio_mcp.py")],

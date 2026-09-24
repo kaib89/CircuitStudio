@@ -75,7 +75,13 @@ currently running.
 ```
 
 Tools: `list_projects`, `list_component_types`, `get_circuit`, `write_circuit`,
-`open_editor`.
+`update_circuit`, `open_editor`.
+
+`update_circuit` edits an existing netlist in place — add, replace or remove
+parts, nets and notes, connect or disconnect pins — so the assistant does not
+have to resend the whole circuit for a small change. Removing a part also drops
+its pins from every net; connecting a pin that already sits in another net moves
+it rather than creating a short.
 
 `write_circuit` validates before it writes. Unknown component types, wrong pin
 names, bad note anchors, duplicate IDs, duplicate net names and pins that sit in

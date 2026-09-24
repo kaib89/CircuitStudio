@@ -93,6 +93,45 @@ CIRCUIT_SCHEMA = {
     "required": ["components", "nets"],
 }
 
+_COMPONENT_SCHEMA = CIRCUIT_SCHEMA["properties"]["components"]["items"]
+_NET_SCHEMA = CIRCUIT_SCHEMA["properties"]["nets"]["items"]
+_NOTE_SCHEMA = CIRCUIT_SCHEMA["properties"]["notes"]["items"]
+_REFS = {"type": "array", "items": {"type": "string"}}
+
+CHANGES_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Applied in this order: removals and disconnect, then upserts, then "
+        "connect. Everything is validated as a whole before anything is written."
+    ),
+    "properties": {
+        "title": {"type": "string"},
+        "remove_components": {**_REFS, "description":
+                              "Part IDs. Their pins are also dropped from every net."},
+        "remove_nets": {**_REFS, "description": "Net names."},
+        "remove_notes": {**_REFS, "description": "Note IDs."},
+        "disconnect": {**_REFS, "description":
+                       "Pin references ('R1.2') to take out of whatever net holds them."},
+        "upsert_components": {"type": "array", "items": _COMPONENT_SCHEMA,
+                              "description": "Added, or replacing the part with the same ID."},
+        "upsert_nets": {"type": "array", "items": _NET_SCHEMA,
+                        "description": "Added, or replacing the net with the same name."},
+        "upsert_notes": {"type": "array", "items": _NOTE_SCHEMA,
+                         "description": "Added, or replacing the note with the same ID."},
+        "connect": {
+            "type": "array",
+            "description": (
+                "Add pins to a net (created if missing). A pin already in "
+                "another net is moved, not duplicated."),
+            "items": {
+                "type": "object",
+                "properties": {"net": {"type": "string"}, "pins": _REFS},
+                "required": ["net", "pins"],
+            },
+        },
+    },
+}
+
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_projects",
@@ -135,6 +174,23 @@ TOOLS: list[dict[str, Any]] = [
                 "circuit": CIRCUIT_SCHEMA,
             },
             "required": ["project", "circuit"],
+        },
+    },
+    {
+        "name": "update_circuit",
+        "description": (
+            "Change part of an existing netlist instead of rewriting all of it: "
+            "add/replace/remove parts, nets and notes, connect or disconnect "
+            "pins. Cheaper and less error-prone than write_circuit for edits. "
+            "Same validation — on any error nothing is written."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "changes": CHANGES_SCHEMA,
+            },
+            "required": ["project", "changes"],
         },
     },
     {
@@ -315,6 +371,11 @@ def tool_write_circuit(args: dict[str, Any]) -> str:
        not isinstance(circuit.get("nets"), list):
         raise ValueError("'circuit' needs the lists 'components' and 'nets'.")
 
+    return _save(name, circuit)
+
+
+def _save(name: str, circuit: dict[str, Any], preface: list[str] | None = None) -> str:
+    """Validate, write circuit.json, place what is new, and report back."""
     errors = _validate(circuit)
     if errors:
         return ("NOT written — please fix:\n"
@@ -336,7 +397,7 @@ def tool_write_circuit(args: dict[str, Any]) -> str:
     scene = Scene(project)
     project.save_routes()       # the editor then opens without routing again
     new_ids = project.auto_placed_ids()
-    msg = [
+    msg = list(preface or []) + [
         f"Written: {project.circuit_path}",
         f"{len(scene.components)} parts, {len(scene.nets)} nets"
         + (f", {len(scene.notes)} notes." if scene.notes else "."),
@@ -349,6 +410,161 @@ def tool_write_circuit(args: dict[str, Any]) -> str:
     msg.append("The human now arranges the parts in the editor "
                "(open_editor) and exports the SVG.")
     return "\n".join(msg)
+
+
+def _strs(changes: dict[str, Any], key: str) -> list[str]:
+    value = changes.get(key) or []
+    if not isinstance(value, list):
+        raise ValueError(f"'{key}' must be a list.")
+    return [str(v) for v in value]
+
+
+def _objs(changes: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    value = changes.get(key) or []
+    if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
+        raise ValueError(f"'{key}' must be a list of objects.")
+    return value
+
+
+def apply_changes(circuit: dict[str, Any],
+                  changes: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Return a patched copy of `circuit` plus a human-readable change log.
+
+    Removing something that is not there is reported, not treated as an
+    error: the model's picture of the file may simply be slightly stale.
+    """
+    circuit = json.loads(json.dumps(circuit))       # deep copy, JSON-safe
+    comps: list[dict[str, Any]] = [c for c in circuit.get("components", [])
+                                   if isinstance(c, dict)]
+    nets: list[dict[str, Any]] = [n for n in circuit.get("nets", [])
+                                  if isinstance(n, dict)]
+    notes: list[dict[str, Any]] = [n for n in circuit.get("notes", []) or []
+                                   if isinstance(n, dict)]
+    log: list[str] = []
+
+    def net_named(name: str) -> dict[str, Any] | None:
+        return next((n for n in nets if str(n.get("name")) == name), None)
+
+    def drop_pins(pred) -> list[str]:
+        dropped = []
+        for n in nets:
+            pins = [str(r) for r in n.get("pins", [])]
+            keep = [r for r in pins if not pred(r)]
+            dropped += [r for r in pins if pred(r)]
+            n["pins"] = keep
+        return dropped
+
+    if "title" in changes:
+        circuit["title"] = str(changes["title"])
+        log.append(f"title set to '{circuit['title']}'")
+
+    for cid in _strs(changes, "remove_components"):
+        before = len(comps)
+        comps = [c for c in comps if str(c.get("id")) != cid]
+        if len(comps) == before:
+            log.append(f"part {cid}: not found, nothing removed")
+            continue
+        dropped = drop_pins(lambda r, cid=cid: r.split(".", 1)[0] == cid)
+        log.append(f"removed part {cid}"
+                   + (f" and its connections {', '.join(dropped)}" if dropped else ""))
+
+    for name in _strs(changes, "remove_nets"):
+        before = len(nets)
+        nets = [n for n in nets if str(n.get("name")) != name]
+        log.append(f"removed net {name}" if len(nets) < before
+                   else f"net {name}: not found, nothing removed")
+
+    for nid in _strs(changes, "remove_notes"):
+        before = len(notes)
+        notes = [n for n in notes if str(n.get("id")) != nid]
+        log.append(f"removed note {nid}" if len(notes) < before
+                   else f"note {nid}: not found, nothing removed")
+
+    for ref in _strs(changes, "disconnect"):
+        dropped = drop_pins(lambda r, ref=ref: r == ref)
+        log.append(f"disconnected {ref}" if dropped else f"{ref}: was not connected")
+
+    for spec in _objs(changes, "upsert_components"):
+        cid = str(spec.get("id", ""))
+        idx = next((i for i, c in enumerate(comps) if str(c.get("id")) == cid), None)
+        if idx is None:
+            comps.append(spec)
+            log.append(f"added part {cid}")
+        else:
+            comps[idx] = spec
+            log.append(f"replaced part {cid}")
+
+    for spec in _objs(changes, "upsert_nets"):
+        name = str(spec.get("name", ""))
+        idx = next((i for i, n in enumerate(nets) if str(n.get("name")) == name), None)
+        if idx is None:
+            nets.append(spec)
+            log.append(f"added net {name}")
+        else:
+            nets[idx] = spec
+            log.append(f"replaced net {name}")
+
+    for spec in _objs(changes, "upsert_notes"):
+        nid = str(spec.get("id", ""))
+        idx = next((i for i, n in enumerate(notes) if str(n.get("id")) == nid), None)
+        if idx is None:
+            notes.append(spec)
+            log.append(f"added note {nid}")
+        else:
+            notes[idx] = spec
+            log.append(f"replaced note {nid}")
+
+    for item in _objs(changes, "connect"):
+        name = str(item.get("net", ""))
+        refs = [str(r) for r in item.get("pins", []) or []]
+        target = net_named(name)
+        if target is None:
+            target = {"name": name, "pins": []}
+            nets.append(target)
+        for ref in refs:
+            for n in nets:
+                if n is not target and ref in [str(r) for r in n.get("pins", [])]:
+                    n["pins"] = [r for r in n["pins"] if str(r) != ref]
+                    log.append(f"moved {ref} from net {n.get('name')} to {name}")
+            if ref not in [str(r) for r in target["pins"]]:
+                target["pins"].append(ref)
+        log.append(f"net {name}: connected {', '.join(refs)}")
+
+    empty = [str(n.get("name")) for n in nets if not n.get("pins")]
+    if empty:
+        nets = [n for n in nets if n.get("pins")]
+        log.append(f"dropped nets left without pins: {', '.join(empty)}")
+
+    circuit["components"] = comps
+    circuit["nets"] = nets
+    circuit["notes"] = notes
+    return circuit, log
+
+
+def tool_update_circuit(args: dict[str, Any]) -> str:
+    name = _require_name(args)
+    changes = args.get("changes")
+    if not isinstance(changes, dict):
+        raise ValueError("'changes' must be an object.")
+    path = PROJECTS_DIR / f"{name}.circuit.json"
+    if not path.exists():
+        return (f"Project '{name}' does not exist yet — create it with "
+                f"write_circuit first.")
+    try:
+        current = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return (f"{path.name} is not valid JSON ({exc}); rewrite it completely "
+                f"with write_circuit.")
+    if not isinstance(current, dict):
+        return f"{path.name} is not a JSON object; rewrite it with write_circuit."
+    circuit, log = apply_changes(current, changes)
+    if not log:
+        return "No changes given — nothing written."
+    result = _save(name, circuit, preface=["Changes:"] + [f"- {l}" for l in log])
+    if result.startswith("NOT written"):
+        return result + "\n\nChanges that were attempted:\n" + "\n".join(
+            f"- {l}" for l in log)
+    return result
 
 
 def tool_open_editor(args: dict[str, Any]) -> str:
@@ -374,6 +590,7 @@ HANDLERS = {
     "list_component_types": tool_list_component_types,
     "get_circuit": tool_get_circuit,
     "write_circuit": tool_write_circuit,
+    "update_circuit": tool_update_circuit,
     "open_editor": tool_open_editor,
 }
 
