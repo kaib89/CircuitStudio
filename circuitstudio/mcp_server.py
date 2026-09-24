@@ -334,6 +334,7 @@ def tool_write_circuit(args: dict[str, Any]) -> str:
     project.save_layout()
 
     scene = Scene(project)
+    project.save_routes()       # the editor then opens without routing again
     new_ids = project.auto_placed_ids()
     msg = [
         f"Written: {project.circuit_path}",

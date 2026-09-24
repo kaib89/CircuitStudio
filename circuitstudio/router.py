@@ -6,7 +6,7 @@ here — positions come from the human-edited layout document.
 from __future__ import annotations
 import heapq
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .symbols import Component
@@ -77,15 +77,30 @@ def build_obstacle_grid(
     return obstacles
 
 
+# Cells are packed into one int: (gx + _OFF) * _STRIDE + (gy + _OFF). Search
+# states add the direction of travel on top: cell * 4 + dir. Ints hash and
+# compare much faster than tuples, and A* spends nearly all its time on that.
+_OFF = 1 << 20
+_STRIDE = 1 << 21
+_NONE_D, _H_D, _V_D = 0, 1, 2
+
+
+def _enc(gx: int, gy: int) -> int:
+    return (gx + _OFF) * _STRIDE + (gy + _OFF)
+
+
 def _astar_edge(
     start: tuple[float, float],
     end: tuple[float, float],
-    obstacles: set[tuple[int, int]],
-    overlap_cells: set[tuple[int, int]],
+    obstacles: set[int],
+    overlap_cells: set[int],
     grid: int = ROUTE_GRID,
     max_iter: int = 300000,
 ) -> list[Segment] | None:
-    """A* orthogonal pathfinding from start to end. Returns segment list or None."""
+    """A* orthogonal pathfinding from start to end. Returns segment list or None.
+
+    `obstacles` and `overlap_cells` hold cells packed with _enc().
+    """
     sx, sy = start
     ex, ey = end
     sgx = int(round(sx / grid))
@@ -96,58 +111,131 @@ def _astar_edge(
     if sgx == egx and sgy == egy:
         return [(start, end)] if start != end else []
 
-    # Heuristic: Manhattan distance with small turn-aware bias
-    def H(gx: int, gy: int) -> int:
-        return abs(gx - egx) + abs(gy - egy)
+    s_cell = _enc(sgx, sgy)
+    e_cell = _enc(egx, egy)
+    S = _STRIDE
+    # (cell delta, dx, dy, direction) — same order as the original tuple version,
+    # which fixes the tie-breaking and therefore the exact routes produced.
+    moves = ((-S, -1, 0, _H_D), (S, 1, 0, _H_D), (-1, 0, -1, _V_D), (1, 0, 1, _V_D))
 
-    NONE_D, H_D, V_D = 0, 1, 2
-    start_state = (sgx, sgy, NONE_D)
-    open_q: list = [(H(sgx, sgy), 0, 0, start_state)]
-    g_scores: dict[tuple[int, int, int], int] = {start_state: 0}
-    parents: dict[tuple[int, int, int], tuple[int, int, int]] = {}
-    closed: set[tuple[int, int, int]] = set()
+    start_state = s_cell * 4 + _NONE_D
+    h0 = abs(sgx - egx) + abs(sgy - egy)
+    open_q: list = [(h0, 0, 0, start_state, sgx, sgy)]
+    g_scores: dict[int, int] = {start_state: 0}
+    parents: dict[int, int] = {}
+    closed: set[int] = set()
     tie = 0
+    push = heapq.heappush
+    pop = heapq.heappop
 
     while open_q and tie < max_iter:
-        _, _, gv, state = heapq.heappop(open_q)
+        _, _, gv, state, gx, gy = pop(open_q)
         if state in closed:
             continue
         closed.add(state)
-        gx, gy, last_d = state
+        cell = state >> 2
+        last_d = state & 3
 
-        if (gx, gy) == (egx, egy):
+        if cell == e_cell:
             cells = [(gx, gy)]
             cur = state
             while cur in parents:
                 cur = parents[cur]
-                cells.append((cur[0], cur[1]))
+                c = cur >> 2
+                cells.append((c // S - _OFF, c % S - _OFF))
             cells.reverse()
             return _cells_to_segments(cells, grid, start, end)
 
-        for ndx, ndy, nd in ((-1, 0, H_D), (1, 0, H_D), (0, -1, V_D), (0, 1, V_D)):
-            ngx, ngy = gx + ndx, gy + ndy
-            new_state = (ngx, ngy, nd)
+        for dc, ddx, ddy, nd in moves:
+            ncell = cell + dc
+            new_state = ncell * 4 + nd
             if new_state in closed:
                 continue
-            cell = (ngx, ngy)
             # Goal cell is always reachable, even if it overlaps an obstacle
             # (pin can be on the body edge after inflation).
-            if cell in obstacles and cell != (egx, egy) and cell != (sgx, sgy):
+            if ncell in obstacles and ncell != e_cell and ncell != s_cell:
                 continue
             cost = 1
-            if last_d != NONE_D and last_d != nd:
+            if last_d != _NONE_D and last_d != nd:
                 cost += 10  # turn penalty — prefer straight runs
-            if cell in overlap_cells:
+            if ncell in overlap_cells:
                 cost += 6   # other nets here — avoid if possible
             new_g = gv + cost
-            if new_state not in g_scores or new_g < g_scores[new_state]:
+            old = g_scores.get(new_state)
+            if old is None or new_g < old:
                 g_scores[new_state] = new_g
                 parents[new_state] = state
                 tie += 1
-                f = new_g + H(ngx, ngy)
-                heapq.heappush(open_q, (f, tie, new_g, new_state))
+                ngx = gx + ddx
+                ngy = gy + ddy
+                push(open_q, (new_g + abs(ngx - egx) + abs(ngy - egy),
+                              tie, new_g, new_state, ngx, ngy))
 
     return None  # no path
+
+
+class FreeSpace:
+    """Connected regions of obstacle-free cells, labelled once per scene.
+
+    A pin boxed in by overlapping parts cannot be reached at all, but A* only
+    finds that out after exhausting its iteration budget on the unbounded
+    plane — over a second per wire. Two cells in different regions are known
+    to be unconnected up front, so such a wire goes straight to the fallback,
+    with exactly the result the exhausted search would have produced.
+    """
+
+    def __init__(self, obstacles: set[tuple[int, int]]):
+        self.obstacles = obstacles
+        self.labels: dict[tuple[int, int], int] = {}
+        if not obstacles:
+            self.box = (0, 0, -1, -1)
+            return
+        xs = [c[0] for c in obstacles]
+        ys = [c[1] for c in obstacles]
+        # One free ring around everything: outside the box the plane is empty,
+        # so the ring (label 0) stands for the whole outside world.
+        x0, y0, x1, y1 = min(xs) - 1, min(ys) - 1, max(xs) + 1, max(ys) + 1
+        self.box = (x0, y0, x1, y1)
+        label = 0
+        for sx in range(x0, x1 + 1):
+            for sy in range(y0, y1 + 1):
+                seed = (sx, sy)
+                if seed in obstacles or seed in self.labels:
+                    continue
+                self.labels[seed] = label
+                stack = [seed]
+                while stack:
+                    cx, cy = stack.pop()
+                    for n in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                        if (x0 <= n[0] <= x1 and y0 <= n[1] <= y1
+                                and n not in obstacles and n not in self.labels):
+                            self.labels[n] = label
+                            stack.append(n)
+                label += 1
+
+    def _label(self, cell: tuple[int, int]) -> int | None:
+        x0, y0, x1, y1 = self.box
+        if not (x0 <= cell[0] <= x1 and y0 <= cell[1] <= y1):
+            return 0
+        return self.labels.get(cell)
+
+    def _entry_labels(self, cell: tuple[int, int]) -> set[int]:
+        # A* may start or end on an obstacle cell but never step through one,
+        # so an obstacle endpoint connects via its free neighbours only.
+        if cell not in self.obstacles:
+            return {self._label(cell)}  # type: ignore[arg-type]
+        cx, cy = cell
+        out = set()
+        for n in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+            if n not in self.obstacles:
+                out.add(self._label(n))
+        out.discard(None)
+        return out  # type: ignore[return-value]
+
+    def connected(self, a: tuple[int, int], b: tuple[int, int]) -> bool:
+        if abs(a[0] - b[0]) + abs(a[1] - b[1]) <= 1:
+            return True
+        return bool(self._entry_labels(a) & self._entry_labels(b))
 
 
 def _cells_to_segments(
@@ -210,78 +298,196 @@ def edge_key(a: str, b: str) -> str:
     return "|".join(sorted([a, b]))
 
 
-def route_net_edges(
-    pin_positions: list[tuple[float, float]],
-    pin_keys: list[str],
-    waypoints: dict[str, list[tuple[float, float]]] | None = None,
-    existing_segments: list[Segment] | None = None,
-    obstacles: set[tuple[int, int]] | None = None,
-    grid: int = ROUTE_GRID,
-) -> list[dict]:
-    """Connect the pins of one net with orthogonal wires.
+def _mst_edges(pts: list[tuple[float, float]]) -> list[tuple[int, int]]:
+    """Prim's MST on Manhattan distance, O(n^2).
 
-    Returns one entry per tree edge:
-        {"key": "R1.2|U1.DIS", "waypoints": [...], "legs": [[seg, ...], ...]}
-
-    A tree edge is split into legs by its user waypoints, so the wire is forced
-    through the points the human dragged it to. Each leg is A*-routed on its own
-    and therefore still avoids component bodies.
+    Picks the same edges as the plain triple loop it replaced: among equally
+    short candidates the one with the lowest tree index i, then lowest j.
     """
-    if len(pin_positions) < 2:
-        return []
-
-    existing = list(existing_segments) if existing_segments else []
-    waypoints = waypoints or {}
-
-    pts = list(pin_positions)
     n = len(pts)
-    # Prim MST on Manhattan
     in_tree = [False] * n
     in_tree[0] = True
+    best_d = [float("inf")] * n
+    best_i = [0] * n
+
+    def relax(k: int) -> None:
+        kx, ky = pts[k]
+        for j in range(n):
+            if in_tree[j]:
+                continue
+            d = abs(kx - pts[j][0]) + abs(ky - pts[j][1])
+            if d < best_d[j] or (d == best_d[j] and k < best_i[j]):
+                best_d[j] = d
+                best_i[j] = k
+
+    relax(0)
     edges: list[tuple[int, int]] = []
     for _ in range(n - 1):
-        best_d = float("inf")
-        best_i, best_j = 0, 1
-        for i in range(n):
-            if not in_tree[i]:
+        j = min((j for j in range(n) if not in_tree[j]),
+                key=lambda j: (best_d[j], best_i[j], j))
+        edges.append((best_i[j], j))
+        in_tree[j] = True
+        relax(j)
+    return edges
+
+
+class Router:
+    """Routes the nets of one scene, one after another.
+
+    Later nets see earlier ones: they avoid running along their wires (overlap
+    penalty) and the L-shaped fallback picks the orientation that overlaps
+    least. So the order in which nets are routed matters, and the caller keeps
+    it stable.
+    """
+
+    def __init__(self, components: list["Component"], grid: int = ROUTE_GRID,
+                 inflate: int = 1):
+        self.grid = grid
+        self.obstacle_cells = build_obstacle_grid(components, grid=grid, inflate=inflate)
+        self._obstacles = {_enc(gx, gy) for gx, gy in self.obstacle_cells}
+        self._free: FreeSpace | None = None
+        self.existing: list[Segment] = []
+        self._overlap: set[int] = set()
+        self._fresh: list[Segment] = []    # wires routed anew in this run
+        self._net_fresh = 0          # index in `_fresh` where this net began
+        self.reused = 0              # edges taken over from stored routes
+        self.routed = 0              # edges that needed a fresh search
+        self.routes: dict[str, dict] = {}   # what to store for next time
+
+    @property
+    def free_space(self) -> FreeSpace:
+        if self._free is None:
+            self._free = FreeSpace(self.obstacle_cells)
+        return self._free
+
+    def _add(self, leg: list[Segment]) -> None:
+        self.existing.extend(leg)
+        for seg in leg:
+            self._overlap.update(_enc(gx, gy) for gx, gy in _segment_cells(seg, self.grid))
+
+    def _leg(self, a: tuple[float, float], b: tuple[float, float]) -> list[Segment]:
+        g = self.grid
+        ca = (int(round(a[0] / g)), int(round(a[1] / g)))
+        cb = (int(round(b[0] / g)), int(round(b[1] / g)))
+        leg = None
+        if ca == cb or self.free_space.connected(ca, cb):
+            leg = _astar_edge(a, b, self._obstacles, self._overlap, g)
+        if leg is None:
+            leg = _l_route_edge(a, b, self.existing)
+        return leg
+
+    def _reusable(self, legs: list[list[Segment]]) -> bool:
+        """A stored wire survives unless the world changed underneath it: it
+        must not run through a body, nor lie on top of another net's wire that
+        was only just routed. (Overlaps it already had when it was stored are
+        fine — the router accepts those at a price, and re-checking them would
+        reroute the same wires on every single change.)"""
+        g = self.grid
+        other = self._fresh[:self._net_fresh]
+        for leg in legs:
+            if not leg:
                 continue
-            for j in range(n):
-                if in_tree[j]:
-                    continue
-                d = abs(pts[i][0] - pts[j][0]) + abs(pts[i][1] - pts[j][1])
-                if d < best_d:
-                    best_d, best_i, best_j = d, i, j
-        edges.append((best_i, best_j))
-        in_tree[best_j] = True
+            ca = (int(round(leg[0][0][0] / g)), int(round(leg[0][0][1] / g)))
+            cb = (int(round(leg[-1][1][0] / g)), int(round(leg[-1][1][1] / g)))
+            ends = {_enc(*ca), _enc(*cb)}
+            # A fallback wire to a boxed-in pin crosses bodies by necessity;
+            # it stays valid for as long as a search would still fail.
+            boxed_in = None
+            for seg in leg:
+                for gx, gy in _segment_cells(seg, g):
+                    c = _enc(gx, gy)
+                    if c in self._obstacles and c not in ends:
+                        if boxed_in is None:
+                            boxed_in = not self.free_space.connected(ca, cb)
+                        if not boxed_in:
+                            return False
+                if any(_overlap_length(seg, o) > 0 for o in other):
+                    return False
+        return True
 
-    # Precompute overlap cells from existing routes (other nets)
-    overlap_cells: set[tuple[int, int]] = set()
-    if obstacles is not None:
-        for s in existing:
-            overlap_cells.update(_segment_cells(s, grid))
+    def _stored(self, stored: dict[str, Any], key: str,
+                chain: list[tuple[float, float]]) -> list[list[Segment]] | None:
+        entry = stored.get(key)
+        if not isinstance(entry, dict):
+            return None
+        try:
+            pts = [tuple(map(float, p)) for p in entry["points"]]
+            legs = [[((float(a[0]), float(a[1])), (float(b[0]), float(b[1])))
+                     for a, b in leg] for leg in entry["legs"]]
+        except (KeyError, TypeError, ValueError, IndexError):
+            return None
+        if len(legs) != len(chain) - 1 or len(pts) != len(chain):
+            return None
+        if not _same_points(pts, chain):
+            # The MST may list the pins the other way round this time.
+            if not _same_points(pts[::-1], chain):
+                return None
+            legs = [[(b, a) for a, b in reversed(leg)] for leg in reversed(legs)]
+        # Snap the ends to the exact current pin coordinates (float noise).
+        for leg, a, b in zip(legs, chain, chain[1:]):
+            if leg:
+                leg[0] = (a, leg[0][1])
+                leg[-1] = (leg[-1][0], b)
+        return legs if self._reusable(legs) else None
 
-    out: list[dict] = []
-    for i, j in edges:
-        key = edge_key(pin_keys[i], pin_keys[j])
-        wps = [tuple(w) for w in waypoints.get(key, [])]
-        chain = [pts[i], *wps, pts[j]]
+    def route_net(
+        self,
+        pin_positions: list[tuple[float, float]],
+        pin_keys: list[str],
+        waypoints: dict[str, list[tuple[float, float]]] | None = None,
+        stored: dict[str, Any] | None = None,
+    ) -> list[dict]:
+        """Connect the pins of one net with orthogonal wires.
 
-        legs: list[list[Segment]] = []
-        for a, b in zip(chain, chain[1:]):
-            leg: list[Segment] | None = None
-            if obstacles is not None:
-                leg = _astar_edge(a, b, obstacles, overlap_cells, grid)
-            if leg is None:
-                leg = _l_route_edge(a, b, existing)
-            legs.append(leg)
-            existing.extend(leg)
-            if obstacles is not None:
-                for s in leg:
-                    overlap_cells.update(_segment_cells(s, grid))
+        Returns one entry per tree edge:
+            {"key": "R1.2|U1.DIS", "waypoints": [...], "legs": [[seg, ...], ...]}
 
-        out.append({"key": key, "waypoints": [list(w) for w in wps], "legs": legs})
+        A tree edge is split into legs by its user waypoints, so the wire is
+        forced through the points the human dragged it to. Each leg is
+        A*-routed on its own and therefore still avoids component bodies.
 
-    return out
+        `stored` holds the wires of an earlier run (see `routes`). An edge whose
+        pins and waypoints have not moved keeps its old wire if that is still
+        valid, so dragging one part only reroutes the wires attached to it —
+        both much faster and calmer than redrawing the whole sheet.
+        """
+        if len(pin_positions) < 2:
+            return []
+        waypoints = waypoints or {}
+        stored = stored or {}
+        pts = list(pin_positions)
+        self._net_fresh = len(self._fresh)
+
+        out: list[dict] = []
+        for i, j in _mst_edges(pts):
+            key = edge_key(pin_keys[i], pin_keys[j])
+            wps = [tuple(w) for w in waypoints.get(key, [])]
+            chain = [pts[i], *wps, pts[j]]
+            legs = self._stored(stored, key, chain)
+            if legs is not None:
+                self.reused += 1
+                for leg in legs:
+                    self._add(leg)
+            else:
+                self.routed += 1
+                legs = []
+                for a, b in zip(chain, chain[1:]):
+                    leg = self._leg(a, b)
+                    legs.append(leg)
+                    self._add(leg)
+                    self._fresh.extend(leg)
+            self.routes[key] = {
+                "points": [[round(x, 2), round(y, 2)] for x, y in chain],
+                "legs": [[[[round(x, 2), round(y, 2)] for x, y in seg] for seg in leg]
+                         for leg in legs],
+            }
+            out.append({"key": key, "waypoints": [list(w) for w in wps], "legs": legs})
+        return out
+
+
+def _same_points(a: list[tuple[float, float]], b: list[tuple[float, float]]) -> bool:
+    return len(a) == len(b) and all(
+        abs(p[0] - q[0]) < 0.05 and abs(p[1] - q[1]) < 0.05 for p, q in zip(a, b))
 
 
 def _pt_key(p: tuple[float, float]) -> tuple[float, float]:

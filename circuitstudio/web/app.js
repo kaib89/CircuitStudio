@@ -893,6 +893,13 @@ document.getElementById('btnArrange').addEventListener('click', async () => {
   } catch (err) { setStatus('Error: ' + err.message); }
 });
 
+document.getElementById('btnReroute').addEventListener('click', async () => {
+  setStatus('Routing…');
+  try {
+    applyPayload(await api('/api/reroute', {}));
+  } catch (err) { setStatus('Error: ' + err.message); }
+});
+
 document.getElementById('btnExport').addEventListener('click', async () => {
   try {
     const res = await api('/api/export', {});

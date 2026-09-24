@@ -88,6 +88,97 @@ class SceneTests(TmpProjects):
         self.assertIn("<svg", scene.to_svg())
 
 
+def _old_mst(pts):
+    """The original O(n^3) Prim loop, kept as the reference."""
+    n = len(pts)
+    in_tree = [False] * n
+    in_tree[0] = True
+    edges = []
+    for _ in range(n - 1):
+        best_d, best_i, best_j = float("inf"), 0, 1
+        for i in range(n):
+            if not in_tree[i]:
+                continue
+            for j in range(n):
+                if in_tree[j]:
+                    continue
+                d = abs(pts[i][0] - pts[j][0]) + abs(pts[i][1] - pts[j][1])
+                if d < best_d:
+                    best_d, best_i, best_j = d, i, j
+        edges.append((best_i, best_j))
+        in_tree[best_j] = True
+    return edges
+
+
+class RoutingTests(TmpProjects):
+    def chain(self, n=8):
+        """A row of resistors, each wired to the next, all sharing GND."""
+        comps = [{"id": f"R{i}", "type": "resistor"} for i in range(n)]
+        comps.append({"id": "GND1", "type": "ground"})
+        nets = [{"name": f"n{i}", "pins": [f"R{i}.2", f"R{i + 1}.1"]}
+                for i in range(n - 1)]
+        nets.append({"name": "GND", "pins": ["R0.1", "GND1.pin"]})
+        pos = {f"R{i}": {"x": i * 160, "y": (i % 2) * 120} for i in range(n)}
+        pos["GND1"] = {"x": -100, "y": 200}
+        return self.project(comps, nets, positions=pos)
+
+    def test_mst_matches_original_including_ties(self) -> None:
+        import random
+        from circuitstudio.router import _mst_edges
+        rnd = random.Random(1)
+        for _ in range(300):
+            # a coarse lattice makes equal distances (ties) very common
+            pts = [(rnd.randint(0, 6) * 10.0, rnd.randint(0, 6) * 10.0)
+                   for _ in range(rnd.randint(2, 12))]
+            self.assertEqual(_mst_edges(pts), _old_mst(pts))
+
+    def test_moving_a_part_keeps_unrelated_wires(self) -> None:
+        p = self.chain()
+        first = Scene(p)
+        self.assertTrue(p.routes_dirty)
+        before = {n["name"]: w for n, w in zip(first.nets, first.wires)}
+        p.set_positions({"R7": {"x": 7 * 160, "y": 300}})
+        second = Scene(p)
+        after = {n["name"]: w for n, w in zip(second.nets, second.wires)}
+        self.assertLessEqual(second.rerouted, 2)       # only n6 touches R7
+        for name in ("n0", "n1", "n2", "n3", "GND"):
+            self.assertEqual(before[name], after[name], name)
+
+    def test_routes_survive_a_new_session(self) -> None:
+        p = self.chain()
+        wires = Scene(p).wires
+        p.save_circuit()
+        p.save_routes()
+        again = Project(self.dir, "t").load()
+        scene = Scene(again)
+        self.assertEqual(scene.rerouted, 0)
+        self.assertEqual(scene.wires, wires)
+
+    def test_stored_wire_is_dropped_when_a_part_lands_on_it(self) -> None:
+        p = self.chain(3)
+        scene = Scene(p)
+        seg = next(s for n, w in zip(scene.nets, scene.wires)
+                   if n["name"] == "n0" for s in w
+                   if abs(s[0][0] - s[1][0]) > 40)     # a long horizontal run
+        mid = ((seg[0][0] + seg[1][0]) / 2, seg[0][1])
+        comps = p.circuit["components"] + [{"id": "C9", "type": "capacitor"}]
+        p.circuit["components"] = comps
+        p.layout["positions"]["C9"] = {"x": mid[0], "y": mid[1], "rotation": 90}
+        scene = Scene(p)
+        body = scene.components[-1].body_bbox()
+        for (x1, y1), (x2, y2) in scene.wires[0]:
+            inside = (max(x1, x2) > body[0] and min(x1, x2) < body[2]
+                      and max(y1, y2) > body[1] and min(y1, y2) < body[3])
+            self.assertFalse(inside, "wire still runs through the new part")
+
+    def test_clear_routes_routes_everything(self) -> None:
+        p = self.chain()
+        Scene(p)
+        p.clear_routes()
+        scene = Scene(p)
+        self.assertEqual(scene.rerouted, sum(len(e) for e in scene.net_edges))
+
+
 class LayoutBackupTests(TmpProjects):
     def test_backup_survives_later_saves(self) -> None:
         p = self.project([{"id": "R1", "type": "resistor"}])

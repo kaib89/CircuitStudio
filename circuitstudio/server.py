@@ -36,11 +36,13 @@ class AppState:
         self.project = Project(self.projects_dir, name).load()
 
     def scene_payload(self) -> dict[str, Any]:
+        scene = Scene(self.project)
+        self.project.save_routes()
         return {
             "version": self.project.version,
             "project": self.project.name,
             "projects": list_projects(self.projects_dir),
-            "scene": Scene(self.project).to_dict(),
+            "scene": scene.to_dict(),
             "view": self.project.layout.get("view"),
             "showGrid": bool(self.project.layout.get("showGrid", True)),
         }
@@ -202,8 +204,18 @@ class Handler(BaseHTTPRequestHandler):
                     if isinstance(p, dict) and p.get("locked")
                 }
                 proj.layout["wires"] = {}  # old guidance points make no sense now
+                proj.clear_routes()
                 proj.autoplace()
                 proj.save_layout(backup=True)
+                payload = self.state.scene_payload()
+            self._json(payload)
+            return
+
+        if path == "/api/reroute":
+            with self.state.lock:
+                proj = self.state.project
+                proj.clear_routes()
+                proj.save_layout()
                 payload = self.state.scene_payload()
             self._json(payload)
             return
@@ -223,6 +235,7 @@ class Handler(BaseHTTPRequestHandler):
             with self.state.lock:
                 proj = self.state.project
                 svg = Scene(proj).to_svg()
+                proj.save_routes()
                 proj.svg_path.write_text(svg, encoding="utf-8")
                 out = str(proj.svg_path)
             self._json({"path": out})

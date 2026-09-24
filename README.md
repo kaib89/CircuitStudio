@@ -14,7 +14,7 @@ keeps those two jobs in separate files, so neither side overwrites the other.
 | File | Contains | Owned by |
 |------|----------|----------|
 | `<name>.circuit.json` | components, nets, notes | the assistant |
-| `<name>.layout.json` | positions, rotation, wire waypoints, note boxes | you |
+| `<name>.layout.json` | positions, rotation, wires and their waypoints, note boxes | you |
 
 The assistant can rewrite the circuit at any time and your arrangement survives:
 components are matched by ID, so anything already placed stays where you put it,
@@ -141,6 +141,7 @@ ICs, connectors and board symbols (`esp32`, `rpi`, `pico`, `arduino_uno`,
 | Undo | `Ctrl+Z` |
 | Align / distribute | toolbar, relative to the first selected part |
 | Guide a wire | click it to add a waypoint, drag the waypoint, double-click to remove |
+| Redraw all wires | **Reroute** — forgets the stored wires and routes everything afresh |
 | Trace a net | hover a wire — the whole net stays lit and its pins are listed |
 | Export | **Export SVG**, written next to the project |
 
@@ -148,6 +149,11 @@ Dragging snaps to the grid, but pin alignment wins over the grid: when a pin
 lines up with a pin of another part, a guide appears and it snaps exactly.
 That matters because pin pitches differ between symbols — without it, some pins
 could never be aligned and wires would zigzag for no reason.
+
+Wires are routed automatically and then stored in the layout. Moving a part
+only reroutes the wires attached to it (and any stored wire it now lands on);
+everything else stays exactly where it was — which keeps the drawing calm and
+large schematics fast.
 
 Junction dots are placed where three or more conductors of the same net meet.
 Wires of different nets that merely cross deliberately get no dot.

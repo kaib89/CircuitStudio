@@ -5,11 +5,12 @@ from the *same* primitive lists here — that's what keeps the editor WYSIWYG.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .document import Project, is_ground_net, is_supply_net, net_color, net_width
 from .router import (
-    ROUTE_GRID, Segment, build_obstacle_grid, find_junctions, route_net_edges,
+    ROUTE_GRID, Router, Segment, find_junctions,
 )
 from .symbols import Component, mirror_symbol, xml_escape
 
@@ -77,6 +78,7 @@ class Scene:
         self.net_edges: list[list[dict[str, Any]]] = [[] for _ in self.nets]
         self.net_pins: list[list[tuple[float, float]]] = [[] for _ in self.nets]
         self.junctions: set[tuple[float, float]] = set()
+        self.rerouted = 0            # edges that needed a fresh A* search
         self._route()
         self.net_labels = self._build_net_labels()
         self.notes = self._build_notes()
@@ -105,27 +107,53 @@ class Scene:
                     f"Net '{net['name']}': '{comp_id}' has no pin '{pin_name}'")
         return pts, keys
 
+    def _route_key(self) -> str:
+        """Everything routing depends on — and nothing else, so moving a note,
+        saving the view or toggling the grid reuses the previous routes."""
+        positions = self.project.layout.get("positions", {})
+        return json.dumps([
+            self.project.circuit.get("components", []),
+            [(c.comp_id, c.x, c.y, c.rotation, c.flip) for c in self.components],
+            [(n["name"], n["pins"]) for n in self.nets],
+            self.project.layout.get("wires") or {},
+            sorted(positions),
+        ], sort_keys=True, default=str)
+
     def _route(self) -> None:
         if not self.components:
             return
+        key = self._route_key()
+        cached = getattr(self.project, "_route_cache", None)
+        if cached and cached[0] == key:
+            (self.wires, self.net_edges, self.net_pins,
+             self.junctions, pin_errors) = cached[1]
+            self.errors.extend(pin_errors)
+            return
+
+        n_errors = len(self.errors)
         waypoints = self.project.layout.get("wires") or {}
-        obstacles = build_obstacle_grid(self.components, grid=ROUTE_GRID, inflate=1)
+        router = Router(self.components, grid=ROUTE_GRID, inflate=1)
         order = sorted(
             range(len(self.nets)),
             key=lambda i: _net_priority(self.nets[i]["name"], len(self.nets[i]["pins"])),
         )
-        existing: list[Segment] = []
+        stored = self.project.layout.get("routes") or {}
         for i in order:
             pts, keys = self._pin_positions(self.nets[i])
             self.net_pins[i] = pts
-            edges = route_net_edges(pts, keys, waypoints=waypoints,
-                                    existing_segments=existing,
-                                    obstacles=obstacles, grid=ROUTE_GRID)
+            edges = router.route_net(pts, keys, waypoints=waypoints, stored=stored)
             self.net_edges[i] = edges
-            flat = [s for e in edges for leg in e["legs"] for s in leg]
-            self.wires[i] = flat
-            existing.extend(flat)
+            self.wires[i] = [s for e in edges for leg in e["legs"] for s in leg]
         self.junctions = find_junctions(self.wires, self.net_pins)
+        self.rerouted = router.routed
+        if router.routes != stored:
+            # Persisted by the caller (Project.save_routes) so the next run —
+            # and the next session — starts from these wires.
+            self.project.layout["routes"] = router.routes
+            self.project.routes_dirty = True  # type: ignore[attr-defined]
+        self.project._route_cache = (key, (  # type: ignore[attr-defined]
+            self.wires, self.net_edges, self.net_pins, self.junctions,
+            self.errors[n_errors:]))
 
     # ── Notes ─────────────────────────────────────────────────────────────
 

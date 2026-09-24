@@ -88,6 +88,7 @@ class Project:
         self.version = 0
         self._circuit_mtime: float = 0.0
         self._backed_up = False
+        self.routes_dirty = False    # set by Scene when it produced new wires
 
     # ── Paths ────────────────────────────────────────────────────────────────
 
@@ -130,6 +131,7 @@ class Project:
         self.layout.setdefault("positions", {})
         self.layout.setdefault("wires", {})
         self.layout.setdefault("notes", {})
+        self.layout.setdefault("routes", {})
         self.layout.setdefault("view", None)
 
         self.autoplace()
@@ -178,6 +180,18 @@ class Project:
             except OSError:
                 pass
         _write_json(self.layout_path, self.layout)
+
+    def save_routes(self) -> None:
+        """Persist wires a Scene just (re)computed, so they are reused next time."""
+        if self.routes_dirty:
+            self.routes_dirty = False
+            self.save_layout()
+
+    def clear_routes(self) -> None:
+        """Forget all stored wires; the next Scene routes everything afresh."""
+        self.layout["routes"] = {}
+        self._route_cache = None
+        self.version += 1
 
     def save_circuit(self) -> None:
         _write_json(self.circuit_path, self.circuit)
