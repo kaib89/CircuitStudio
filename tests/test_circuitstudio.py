@@ -70,6 +70,34 @@ class SymbolTests(unittest.TestCase):
                 self.assertLess(gap, 0.01, f"{spec['type']} pin {p.name}: gap {gap}px")
 
 
+class GeometryCompatTests(unittest.TestCase):
+    """Pin positions are what layouts are aligned to; they must not drift."""
+
+    def tips(self, spec):
+        c = build_component(spec)
+        return {p.name: (round(p.dx * 50, 3), round(p.dy * 50, 3)) for p in c.pins}
+
+    def test_board_pins_unchanged(self) -> None:
+        t = self.tips({"id": "U1", "type": "esp32",
+                       "pins": {"left": ["3V3", "EN"], "right": ["IO2"], "bottom": ["GND"]}})
+        self.assertEqual(t, {"3V3": (-90, -20), "EN": (-90, 20), "IO2": (90, 0),
+                             "GND": (0, 90)})
+
+    def test_side_only_ic_pins_unchanged(self) -> None:
+        t = self.tips({"id": "U1", "type": "ic",
+                       "pins": {"left": ["A", "B", "C"], "right": ["D"]}})
+        self.assertEqual(t, {"A": (-70, -40), "B": (-70, 0), "C": (-70, 40),
+                             "D": (70, 0)})
+
+    def test_ic_leads_have_constant_length(self) -> None:
+        c = build_component({"id": "U1", "type": "ic", "pins": {
+            "left": list("ABCDEFGH"), "right": list("IJKLMNOP"),
+            "top": ["VCC"], "bottom": ["GND"]}})
+        x0, y0, x1, y1 = c._body_local()
+        self.assertEqual(c.pin("VCC").dy * 50, y0 - 30)
+        self.assertEqual(c.pin("A").dx * 50, x0 - 30)
+
+
 class SceneTests(TmpProjects):
     def test_bounds_follow_rotation(self) -> None:
         p = self.project([{"id": "J1", "type": "connector", "n": 12}],

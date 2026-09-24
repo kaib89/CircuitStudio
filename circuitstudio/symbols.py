@@ -564,6 +564,8 @@ class NE555(Component):
 # ── Generic IC ────────────────────────────────────────────────────────────────
 
 class IC(Component):
+    LEAD = 30  # px from the body edge to the pin tip
+
     def __init__(self, comp_id: str, value: str = "",
                  left: list[str] | None = None,
                  right: list[str] | None = None,
@@ -579,25 +581,27 @@ class IC(Component):
         n_tb = max(len(top), len(bottom), 1)
         self._n_lr = n_lr
         self._n_tb = n_tb
-        # Pin tips in px. The stubs are drawn out to exactly these points, so a
-        # wire always ends on the symbol even though the tips sit further out
-        # than the body edge + a fixed lead would put them.
-        self._tip_x = (n_tb * 0.6 + 0.8) * 50
-        self._tip_y = (n_lr * 0.6 + 0.8) * 50
+        # Pin tips in px: body edge plus a fixed lead. With pins on the left
+        # and right only (by far the common case) this is 70 px, the same as
+        # the older formula, so existing layouts keep their alignment.
+        W, H = self._ic_dims()
+        self._tip_x = W / 2 + self.LEAD
+        self._tip_y = H / 2 + self.LEAD
+        ux, uy = self._tip_x / 50, self._tip_y / 50
 
         pins: list[PinDef] = []
         for i, name in enumerate(left):
             dy = (i - (len(left) - 1) / 2) * 0.8
-            pins.append(PinDef(name, -(n_tb * 0.6 + 0.8), dy))
+            pins.append(PinDef(name, -ux, dy))
         for i, name in enumerate(right):
             dy = (i - (len(right) - 1) / 2) * 0.8
-            pins.append(PinDef(name, (n_tb * 0.6 + 0.8), dy))
+            pins.append(PinDef(name, ux, dy))
         for i, name in enumerate(top):
             dx = (i - (len(top) - 1) / 2) * 0.8
-            pins.append(PinDef(name, dx, -(n_lr * 0.6 + 0.8)))
+            pins.append(PinDef(name, dx, -uy))
         for i, name in enumerate(bottom):
             dx = (i - (len(bottom) - 1) / 2) * 0.8
-            pins.append(PinDef(name, dx, (n_lr * 0.6 + 0.8)))
+            pins.append(PinDef(name, dx, uy))
 
         super().__init__(comp_id=comp_id, comp_type="ic", value=value,
                          rotation=rotation, pins=pins)
@@ -608,8 +612,9 @@ class IC(Component):
 
     def _ic_dims(self) -> tuple[int, int]:
         W = max(self._n_tb * 40 + 20, 80)
-        # Tight on height: just the pin span + 10px padding each side.
-        H = max(self._n_lr * 40, 60)
+        # Tight on height: the pin span + 20px padding, but never less than
+        # the minimum width, so a single top/bottom pin keeps a 70 px tip.
+        H = max(self._n_lr * 40, 80)
         return W, H
 
     def _body_local(self) -> tuple[float, float, float, float]:
@@ -1027,27 +1032,28 @@ class _Board(Component):
         self._top = top
         self._bottom = bottom
 
-        W_units = max(n_tb * 0.8, 2)
-        H_units = max(n_lr * 0.8, 2)
-        # Pin tips in px; the stubs are drawn out to these (see IC).
-        self._tip_x = (W_units / 2 + 0.8) * 50
-        self._tip_y = (H_units / 2 + 0.8) * 50
+        # Body at least 100 px, pin tips a fixed 40 px lead further out.
+        # That reproduces the tip positions of the older unit-based formula
+        # exactly, so existing layouts are unaffected.
+        self._W = max(n_tb * 40, 100)
+        self._H = max(n_lr * 40, 100)
+        self._tip_x = self._W / 2 + 40
+        self._tip_y = self._H / 2 + 40
+        ux, uy = self._tip_x / 50, self._tip_y / 50
 
         for i, name in enumerate(left):
             dy = (i - (len(left) - 1) / 2) * 0.8
-            pin_defs.append(PinDef(name, -(W_units / 2 + 0.8), dy))
+            pin_defs.append(PinDef(name, -ux, dy))
         for i, name in enumerate(right):
             dy = (i - (len(right) - 1) / 2) * 0.8
-            pin_defs.append(PinDef(name, W_units / 2 + 0.8, dy))
+            pin_defs.append(PinDef(name, ux, dy))
         for i, name in enumerate(top):
             dx = (i - (len(top) - 1) / 2) * 0.8
-            pin_defs.append(PinDef(name, dx, -(H_units / 2 + 0.8)))
+            pin_defs.append(PinDef(name, dx, -uy))
         for i, name in enumerate(bottom):
             dx = (i - (len(bottom) - 1) / 2) * 0.8
-            pin_defs.append(PinDef(name, dx, H_units / 2 + 0.8))
+            pin_defs.append(PinDef(name, dx, uy))
 
-        self._W = max(n_tb * 40, 80)
-        self._H = max(n_lr * 40, 80)
 
         super().__init__(comp_id=comp_id, comp_type=self.BOARD_NAME.lower(),
                          value=value or self.BOARD_NAME,
