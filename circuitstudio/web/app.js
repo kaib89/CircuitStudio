@@ -43,6 +43,7 @@ let viewSaveTimer = null;
 let lastWpClick = null;
 let hoverNet = null;
 const undoStack = [];
+const redoStack = [];
 const HISTORY_MAX = 50;
 const DBLCLICK_MS = 700;
 const SNAP_PX = 9;          // pin-alignment catch radius, in screen pixels
@@ -452,15 +453,61 @@ function pushHistory() {
   if (!s) return;
   undoStack.push(s);
   if (undoStack.length > HISTORY_MAX) undoStack.shift();
+  redoStack.length = 0;   // a new change starts a new branch of history
 }
 
-async function undo() {
-  const s = undoStack.pop();
-  if (!s) { setStatus('Nothing left to undo.'); return; }
+/** Step through history: restore one stack's top, park the present on the other. */
+async function travel(from, to, verb) {
+  const s = from.pop();
+  if (!s) { setStatus(`Nothing to ${verb}.`); return; }
+  const now = snapshot();
   try {
     applyPayload(await api('/api/restore', s));
-    setStatus(`Undone — ${undoStack.length} step(s) left in history.`);
-  } catch (err) { setStatus('Error: ' + err.message); }
+    if (now) to.push(now);
+    setStatus(`${verb === 'undo' ? 'Undone' : 'Redone'} — ` +
+              `${undoStack.length} undo / ${redoStack.length} redo step(s) left.`);
+  } catch (err) {
+    from.push(s);
+    setStatus('Error: ' + err.message);
+  }
+}
+
+const undo = () => travel(undoStack, redoStack, 'undo');
+const redo = () => travel(redoStack, undoStack, 'redo');
+
+/** Rotate or mirror the selection as one rigid group.
+ *  A single part turns in place; several parts also swing around their
+ *  common centre, so wiring that was lined up stays lined up. The centre is
+ *  snapped to the grid, which keeps grid-placed parts on the grid. */
+async function transformSelection(kind) {
+  const comps = selectedComponents();
+  if (!comps.length) return;
+  let cx = 0, cy = 0;
+  if (comps.length > 1) {
+    const xs = comps.map(c => c.x), ys = comps.map(c => c.y);
+    cx = snap((Math.min(...xs) + Math.max(...xs)) / 2);
+    cy = snap((Math.min(...ys) + Math.max(...ys)) / 2);
+  }
+  const updates = {};
+  for (const c of comps) {
+    const dx = c.x - cx, dy = c.y - cy;
+    let x = c.x, y = c.y, rotation = c.rotation, flip = c.flip;
+    if (kind === 'cw') {             // SVG y points down: clockwise is (-dy, dx)
+      if (comps.length > 1) { x = cx - dy; y = cy + dx; }
+      rotation = (c.rotation + 90) % 360;
+    } else if (kind === 'ccw') {
+      if (comps.length > 1) { x = cx + dy; y = cy - dx; }
+      rotation = (c.rotation + 270) % 360;
+    } else {                         // mirror left-right on screen
+      if (comps.length > 1) x = cx - dx;
+      // Flip is applied before rotation, so a screen mirror of a rotated
+      // part is: toggle the flip and run the rotation the other way.
+      flip = !c.flip;
+      rotation = (360 - c.rotation) % 360;
+    }
+    updates[c.id] = { x, y, rotation, flip };
+  }
+  await applyPositions(updates);
 }
 
 canvas.addEventListener('pointerdown', evt => {
@@ -751,33 +798,21 @@ document.addEventListener('keydown', async evt => {
     evt.preventDefault();
     return;
   }
-  if ((evt.ctrlKey || evt.metaKey) && evt.key.toLowerCase() === 'z') {
-    evt.preventDefault();
-    await undo();
-    return;
+  const key = evt.key.toLowerCase();
+  if (evt.ctrlKey || evt.metaKey) {
+    if (key === 'z' && evt.shiftKey || key === 'y') {
+      evt.preventDefault();
+      await redo();
+    } else if (key === 'z') {
+      evt.preventDefault();
+      await undo();
+    }
+    return;   // leave Ctrl+R, Ctrl+F, … to the browser
   }
-  if (evt.key.toLowerCase() === 'r' && selected.size) {
-    const step = evt.shiftKey ? 270 : 90;
-    const updates = {};
-    for (const c of selectedComponents()) {
-      updates[c.id] = { x: c.x, y: c.y, rotation: (c.rotation + step) % 360,
-                        flip: c.flip };
-    }
-    if (!Object.keys(updates).length) return;
-    pushHistory();
-    try {
-      applyPayload(await api('/api/layout', { positions: updates }));
-    } catch (err) { setStatus('Error: ' + err.message); }
-  } else if (evt.key.toLowerCase() === 'm' && selected.size) {
-    const updates = {};
-    for (const c of selectedComponents()) {
-      updates[c.id] = { x: c.x, y: c.y, rotation: c.rotation, flip: !c.flip };
-    }
-    if (!Object.keys(updates).length) return;
-    pushHistory();
-    try {
-      applyPayload(await api('/api/layout', { positions: updates }));
-    } catch (err) { setStatus('Error: ' + err.message); }
+  if (key === 'r' && selected.size) {
+    await transformSelection(evt.shiftKey ? 'ccw' : 'cw');
+  } else if (key === 'm' && selected.size) {
+    await transformSelection('mirror');
   } else if (evt.key.toLowerCase() === 'l' && selected.size) {
     // Lock state is a property of the selection as a whole: if anything in it is
     // still unlocked, lock everything; otherwise unlock everything.

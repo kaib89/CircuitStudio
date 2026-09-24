@@ -142,9 +142,9 @@ ICs, connectors and board symbols (`esp32`, `rpi`, `pico`, `arduino_uno`,
 | Move | drag a part |
 | Select several | drag a frame on empty space, or shift-click |
 | Pan / zoom | space or middle-drag / mouse wheel |
-| Rotate, mirror, lock | `R`, `M`, `L` — locked parts also survive **Auto-arrange** |
+| Rotate, mirror, lock | `R` (`Shift+R` the other way), `M`, `L` — several selected parts turn as one group; locked parts also survive **Auto-arrange** |
 | Nudge | arrow keys (shift = 5 steps) |
-| Undo | `Ctrl+Z` |
+| Undo / redo | `Ctrl+Z` / `Ctrl+Y` or `Ctrl+Shift+Z` |
 | Align / distribute | toolbar, relative to the first selected part |
 | Guide a wire | click it to add a waypoint, drag the waypoint, double-click to remove |
 | Redraw all wires | **Reroute** — forgets the stored wires and routes everything afresh |
