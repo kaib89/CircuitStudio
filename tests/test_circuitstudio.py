@@ -313,6 +313,18 @@ class McpTests(TmpProjects):
         self.assertEqual(nets["mid"], ["R1.2"])
         self.assertIn("R2.1", nets["GND"])
 
+    def test_update_keeps_nc_consistent(self) -> None:
+        self.base()
+        mcp_server.tool_update_circuit({"project": "t", "changes": {
+            "upsert_components": [{"id": "R3", "type": "resistor"}],
+            "add_nc": ["R3.1", "R3.2", "R1.1"]}})
+        self.assertEqual(self.circuit()["nc"], ["R3.1", "R3.2", "R1.1"])
+        text = mcp_server.tool_update_circuit({"project": "t", "changes": {
+            "remove_components": ["R3"],
+            "connect": [{"net": "GND", "pins": ["R1.1"]}]}})
+        self.assertIn("Written", text)       # no dangling nc refs to R3
+        self.assertEqual(self.circuit()["nc"], [])
+
     def test_invalid_update_writes_nothing(self) -> None:
         self.base()
         before = self.circuit()

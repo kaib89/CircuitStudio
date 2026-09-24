@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from . import erc
 from .document import Project, is_ground_net, is_supply_net, net_color, net_width
 from .router import (
     ROUTE_GRID, Router, Segment, find_junctions,
@@ -26,6 +27,18 @@ NOTE_FILL = "#FFF9E3"
 NOTE_STROKE = "#C8A951"
 NOTE_TEXT = "#4A3F1E"
 NOTE_LEADER = "#B08A3E"
+
+NC_COLOR = "#8A8F98"
+NC_ARM = 5  # half-length of the no-connect cross
+
+_ID_SAFE = str.maketrans({c: "_" for c in " \t/\\\"'<>&#%"})
+
+
+def svg_id(prefix: str, name: str, index: int) -> str:
+    """An XML-legal, unique id. Net names may contain spaces or repeat, both of
+    which would produce invalid markup if pasted in raw."""
+    cleaned = str(name).translate(_ID_SAFE) or "net"
+    return f"{prefix}{index}_{cleaned}"
 
 
 def wrap_note_text(text: str, width: float) -> list[str]:
@@ -82,6 +95,26 @@ class Scene:
         self._route()
         self.net_labels = self._build_net_labels()
         self.notes = self._build_notes()
+        self.erc = erc.check(project.circuit, self.components)
+        self.nc_marks = self._build_pin_marks(erc.nc_pins(project.circuit))
+        self.open_pins = self._build_pin_marks(
+            erc.open_pins(project.circuit, self.components))
+
+    # ── Pin markers ──────────────────────────────────────────────────────
+
+    def _build_pin_marks(self, refs) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for ref in sorted(refs):
+            comp_id, _, pin_name = str(ref).partition(".")
+            comp = self._by_id.get(comp_id)
+            if comp is None or not pin_name:
+                continue
+            try:
+                x, y = comp.abs_pin_pos(pin_name)
+            except KeyError:
+                continue
+            out.append({"ref": ref, "x": x, "y": y})
+        return out
 
     # ── Routing ──────────────────────────────────────────────────────────────
 
@@ -219,36 +252,53 @@ class Scene:
             m = 6
             x0, y0, x1, y1 = c.extent_bbox()
             boxes.append((x0 + m, y0 + m, x1 - m, y1 - m))
+        for c in self.components:
+            boxes.extend(c.label_boxes())
 
-        def inside_any(x: float, y: float) -> bool:
-            return any(x0 < x < x1 and y0 < y < y1 for x0, y0, x1, y1 in boxes)
+        def hits(box, others) -> bool:
+            x0, y0, x1, y1 = box
+            return any(x0 < bx1 and bx0 < x1 and y0 < by1 and by0 < y1
+                       for bx0, by0, bx1, by1 in others)
 
         out: list[dict[str, Any]] = []
+        taken: list[tuple[float, float, float, float]] = []
         for net, segs in zip(self.nets, self.wires):
             if not segs or len(net["pins"]) < 2:
                 continue
-            best = None
+            name = net["name"]
+            bg_w = max(len(name) * 5.5 + 6, 16)
+            bg_h = 12
+
+            # Longest segment first, but skip any spot where the label would
+            # land on a symbol, a value, or another net label — two names
+            # printed on top of each other are worse than no name at all.
+            candidates = []
             for (x1, y1), (x2, y2) in segs:
                 length = abs(x2 - x1) + abs(y2 - y1)
                 if length < 35:
                     continue
-                mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-                if inside_any(mx, my):
+                candidates.append((length, (x1 + x2) / 2, (y1 + y2) / 2,
+                                   abs(y1 - y2) < 0.5))
+            candidates.sort(key=lambda c: -c[0])
+
+            placed = None
+            for _, mx, my, horizontal in candidates:
+                if horizontal:
+                    bg_x, bg_y = mx - bg_w / 2, my - bg_h - 1
+                    tx, ty = mx, my - 4
+                else:
+                    bg_x, bg_y = mx + 4, my - bg_h / 2
+                    tx, ty = mx + 4 + bg_w / 2, my + 3
+                box = (bg_x, bg_y, bg_x + bg_w, bg_y + bg_h)
+                if hits(box, boxes) or hits(box, taken):
                     continue
-                if best is None or length > best[0]:
-                    best = (length, mx, my, abs(y1 - y2) < 0.5)
-            if best is None:
+                placed = (box, bg_x, bg_y, tx, ty)
+                break
+            if placed is None:
                 continue
-            _, mx, my, horizontal = best
-            name = net["name"]
-            bg_w = max(len(name) * 5.5 + 6, 16)
-            bg_h = 12
-            if horizontal:
-                bg_x, bg_y = mx - bg_w / 2, my - bg_h - 1
-                tx, ty = mx, my - 4
-            else:
-                bg_x, bg_y = mx + 4, my - bg_h / 2
-                tx, ty = mx + 4 + bg_w / 2, my + 3
+
+            box, bg_x, bg_y, tx, ty = placed
+            taken.append(box)
             out.append({
                 "text": name, "color": net["color"],
                 "x": tx, "y": ty,
@@ -334,8 +384,25 @@ class Scene:
             "junctions": sorted(self.junctions),
             "netLabels": self.net_labels,
             "notes": self.notes,
+            "ncMarks": self.nc_marks,
+            "openPins": self.open_pins,
+            "erc": self.erc,
             "errors": self.errors,
         }
+
+    def nc_svg(self) -> str:
+        """The standard no-connect cross: this pin is open on purpose."""
+        parts = []
+        for m in self.nc_marks:
+            x, y = m["x"], m["y"]
+            parts.append(
+                f'<g stroke="{NC_COLOR}" stroke-width="1.6" stroke-linecap="round">'
+                f'<line x1="{x - NC_ARM:.1f}" y1="{y - NC_ARM:.1f}" '
+                f'x2="{x + NC_ARM:.1f}" y2="{y + NC_ARM:.1f}"/>'
+                f'<line x1="{x - NC_ARM:.1f}" y1="{y + NC_ARM:.1f}" '
+                f'x2="{x + NC_ARM:.1f}" y2="{y - NC_ARM:.1f}"/></g>'
+            )
+        return "".join(parts)
 
     def note_svg(self, n: dict[str, Any]) -> str:
         """One annotation box plus its dashed leader.
@@ -379,10 +446,10 @@ class Scene:
             f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" fill="#FFFFFF"/>',
         ]
 
-        for net, segs in zip(self.nets, self.wires):
+        for i, (net, segs) in enumerate(zip(self.nets, self.wires)):
             if not segs:
                 continue
-            lines = [f'<g id="net_{xml_escape(net["name"])}">']
+            lines = [f'<g id="{svg_id("net", net["name"], i)}">']
             for (x1, y1), (x2, y2) in segs:
                 lines.append(
                     f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
@@ -418,6 +485,9 @@ class Scene:
                 f'<g id="comp_{xml_escape(c.comp_id)}" transform="{transform}">\n'
                 f'{self.symbol_svg(c)}\n</g>'
             )
+
+        if self.nc_marks:
+            parts.append(f'<g id="noconnect">{self.nc_svg()}</g>')
 
         for n in self.notes:
             if not n["hidden"]:

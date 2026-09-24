@@ -69,6 +69,19 @@ body { display: flex; flex-direction: column; }
   cursor: default;
 }
 
+/* Hand-back state: green once the assistant has an up-to-date picture, amber
+   again as soon as the arrangement moves on. */
+#toolbar button.done {
+  background: #e7f6ec;
+  border-color: #7cc294;
+  color: #1f6b3b;
+}
+#toolbar button.stale {
+  background: #fdf3e2;
+  border-color: #dcae5f;
+  color: #7a5312;
+}
+
 .group {
   display: inline-flex;
   align-items: center;
@@ -185,6 +198,21 @@ line.guide {
   pointer-events: none;
 }
 
+/* No-connect crosses belong to the drawing; open-pin rings are an editor aid. */
+g.nc line {
+  stroke: #8A8F98;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+circle.openpin {
+  fill: none;
+  stroke: #d94f4f;
+  stroke-width: 1.6;
+  stroke-dasharray: 3 2.5;
+}
+#canvas.netfocus #noConnect,
+#canvas.netfocus #openPins { opacity: .2; }
+
 #errors {
   position: absolute;
   left: 12px;
@@ -211,4 +239,36 @@ line.guide {
   padding: 4px 8px;
   border-radius: 4px;
   pointer-events: none;
+}
+
+#warnings {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  max-width: 52ch;
+  max-height: 40%;
+  overflow: auto;
+  background: #fffaef;
+  border: 1px solid #ddb769;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #6d5316;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+/* Narrower windows: the toolbar must never wrap (see #toolbar), so it gets
+   denser instead of losing controls off the right edge. */
+@media (max-width: 1640px) {
+  #toolbar { gap: 8px; padding: 8px 10px; }
+  #toolbar button { padding: 5px 8px; }
+  .group { gap: 4px; padding-left: 8px; }
+}
+@media (max-width: 1440px) {
+  #toolbar .brand { display: none; }   /* the tab title still says it */
+  .group-label { display: none; }
+}
+@media (max-width: 1320px) {
+  #toolbar { gap: 6px; }
+  #toolbar button { padding: 5px 6px; }
 }

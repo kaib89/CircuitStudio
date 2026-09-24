@@ -77,6 +77,86 @@ def build_obstacle_grid(
     return obstacles
 
 
+def build_label_grid(
+    components: list["Component"],
+    grid: int = ROUTE_GRID,
+) -> set[tuple[int, int]]:
+    """Cells covered by component labels — *soft* obstacles.
+
+    Values and reference designators sit outside the body box, so without this
+    the router draws wires straight through the text. Blocking those cells
+    outright would be wrong though: a label often sits right where a wire has to
+    approach its pin, so this only makes crossing expensive.
+    """
+    cells: set[tuple[int, int]] = set()
+    for c in components:
+        for bx0, by0, bx1, by1 in c.label_boxes():
+            for gx in range(int(math.floor(bx0 / grid)), int(math.ceil(bx1 / grid)) + 1):
+                for gy in range(int(math.floor(by0 / grid)), int(math.ceil(by1 / grid)) + 1):
+                    cells.add((gx, gy))
+    return cells
+
+
+SOFT_LABEL_COST = 8    # per cell, on top of the base step cost
+SOFT_OVERLAP_COST = 6  # cells already carrying another net
+TURN_COST = 10         # prefer long straight runs over staircases
+# Search boxes around a connection, tried in order; almost every detour is a
+# small hop around one symbol. None = unbounded, the last resort — only tried
+# when FreeSpace says a path exists at all.
+SEARCH_MARGINS = (10, 40, 160, None)
+# Weighted A*: >1 over-estimates the remaining cost, trading optimality (more
+# corners) for fewer expansions. See HEURISTIC_WEIGHT's use for the numbers.
+HEURISTIC_WEIGHT = 1.4
+
+
+def _fast_route(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    obstacles: set[tuple[int, int]],
+    labels: set[tuple[int, int]],
+    existing: list[Segment],
+    grid: int,
+) -> list[Segment] | None:
+    """Straight or single-corner route, if one is free.
+
+    This is the overwhelmingly common case and costs a few set lookups instead
+    of a full A* expansion, which is what makes larger schematics usable.
+    Returns None when every candidate hits a component body.
+    """
+    ax, ay = a
+    bx, by = b
+    if (ax, ay) == (bx, by):
+        return []
+    if ax == bx or ay == by:
+        candidates = [[(a, b)]]
+    else:
+        candidates = [
+            [(a, (bx, ay)), ((bx, ay), b)],
+            [(a, (ax, by)), ((ax, by), b)],
+        ]
+
+    start_cell = (int(round(ax / grid)), int(round(ay / grid)))
+    end_cell = (int(round(bx / grid)), int(round(by / grid)))
+
+    best: list[Segment] | None = None
+    best_cost = float("inf")
+    for segs in candidates:
+        cells: set[tuple[int, int]] = set()
+        for s in segs:
+            cells |= _segment_cells(s, grid)
+        cells.discard(start_cell)
+        cells.discard(end_cell)
+        if cells & obstacles:
+            continue
+        if cells & labels:
+            # A wire across a label is worth a proper search for a way around.
+            continue
+        cost = _total_overlap(segs, existing)
+        if cost < best_cost:
+            best_cost, best = cost, segs
+    return best
+
+
 # Cells are packed into one int: (gx + _OFF) * _STRIDE + (gy + _OFF). Search
 # states add the direction of travel on top: cell * 4 + dir. Ints hash and
 # compare much faster than tuples, and A* spends nearly all its time on that.
@@ -96,10 +176,14 @@ def _astar_edge(
     overlap_cells: set[int],
     grid: int = ROUTE_GRID,
     max_iter: int = 300000,
+    label_cells: set[int] | frozenset = frozenset(),
+    margin: int | None = None,
 ) -> list[Segment] | None:
     """A* orthogonal pathfinding from start to end. Returns segment list or None.
 
-    `obstacles` and `overlap_cells` hold cells packed with _enc().
+    `obstacles`, `overlap_cells` and `label_cells` hold cells packed with
+    _enc(). `margin` limits the search to a box around the two endpoints, so
+    a detour that needs more room fails fast and the caller retries wider.
     """
     sx, sy = start
     ex, ey = end
@@ -111,6 +195,22 @@ def _astar_edge(
     if sgx == egx and sgy == egy:
         return [(start, end)] if start != end else []
 
+    if margin is None:
+        lo_x = lo_y = -(1 << 30)
+        hi_x = hi_y = 1 << 30
+    else:
+        lo_x, hi_x = min(sgx, egx) - margin, max(sgx, egx) + margin
+        lo_y, hi_y = min(sgy, egy) - margin, max(sgy, egy) + margin
+
+    # Manhattan distance, plus the corner that is unavoidable when the target
+    # is off-axis — without it the turn penalty dominates the cost and A*
+    # degenerates towards Dijkstra.
+    w = HEURISTIC_WEIGHT
+
+    def H(gx: int, gy: int) -> float:
+        dx, dy = abs(gx - egx), abs(gy - egy)
+        return (dx + dy + (TURN_COST if dx and dy else 0)) * w
+
     s_cell = _enc(sgx, sgy)
     e_cell = _enc(egx, egy)
     S = _STRIDE
@@ -119,8 +219,7 @@ def _astar_edge(
     moves = ((-S, -1, 0, _H_D), (S, 1, 0, _H_D), (-1, 0, -1, _V_D), (1, 0, 1, _V_D))
 
     start_state = s_cell * 4 + _NONE_D
-    h0 = abs(sgx - egx) + abs(sgy - egy)
-    open_q: list = [(h0, 0, 0, start_state, sgx, sgy)]
+    open_q: list = [(H(sgx, sgy), 0, 0, start_state, sgx, sgy)]
     g_scores: dict[int, int] = {start_state: 0}
     parents: dict[int, int] = {}
     closed: set[int] = set()
@@ -147,6 +246,10 @@ def _astar_edge(
             return _cells_to_segments(cells, grid, start, end)
 
         for dc, ddx, ddy, nd in moves:
+            ngx = gx + ddx
+            ngy = gy + ddy
+            if not (lo_x <= ngx <= hi_x and lo_y <= ngy <= hi_y):
+                continue
             ncell = cell + dc
             new_state = ncell * 4 + nd
             if new_state in closed:
@@ -157,19 +260,18 @@ def _astar_edge(
                 continue
             cost = 1
             if last_d != _NONE_D and last_d != nd:
-                cost += 10  # turn penalty — prefer straight runs
+                cost += TURN_COST          # prefer straight runs
             if ncell in overlap_cells:
-                cost += 6   # other nets here — avoid if possible
+                cost += SOFT_OVERLAP_COST  # other nets here — avoid if possible
+            if ncell in label_cells:
+                cost += SOFT_LABEL_COST    # don't cut through a value or ref
             new_g = gv + cost
             old = g_scores.get(new_state)
             if old is None or new_g < old:
                 g_scores[new_state] = new_g
                 parents[new_state] = state
                 tie += 1
-                ngx = gx + ddx
-                ngy = gy + ddy
-                push(open_q, (new_g + abs(ngx - egx) + abs(ngy - egy),
-                              tie, new_g, new_state, ngx, ngy))
+                push(open_q, (new_g + H(ngx, ngy), tie, new_g, new_state, ngx, ngy))
 
     return None  # no path
 
@@ -345,6 +447,9 @@ class Router:
         self.grid = grid
         self.obstacle_cells = build_obstacle_grid(components, grid=grid, inflate=inflate)
         self._obstacles = {_enc(gx, gy) for gx, gy in self.obstacle_cells}
+        # Inside a body the hard rule already applies.
+        self.label_cells = build_label_grid(components, grid=grid) - self.obstacle_cells
+        self._labels = {_enc(gx, gy) for gx, gy in self.label_cells}
         self._free: FreeSpace | None = None
         self.existing: list[Segment] = []
         self._overlap: set[int] = set()
@@ -366,12 +471,21 @@ class Router:
             self._overlap.update(_enc(gx, gy) for gx, gy in _segment_cells(seg, self.grid))
 
     def _leg(self, a: tuple[float, float], b: tuple[float, float]) -> list[Segment]:
+        """Cheapest strategy that works: a direct or L-shaped wire if one is
+        clear, else A* in a growing search box, else the plain L-route."""
         g = self.grid
         ca = (int(round(a[0] / g)), int(round(a[1] / g)))
         cb = (int(round(b[0] / g)), int(round(b[1] / g)))
-        leg = None
-        if ca == cb or self.free_space.connected(ca, cb):
-            leg = _astar_edge(a, b, self._obstacles, self._overlap, g)
+        leg = _fast_route(a, b, self.obstacle_cells, self.label_cells, self.existing, g)
+        if leg is None and (ca == cb or self.free_space.connected(ca, cb)):
+            for margin in SEARCH_MARGINS:
+                leg = _astar_edge(a, b, self._obstacles, self._overlap, g,
+                                  label_cells=self._labels, margin=margin)
+                if leg is not None:
+                    break
+        if leg is None:
+            # No clean path — rather cross a label than drop the connection.
+            leg = _fast_route(a, b, self.obstacle_cells, frozenset(), self.existing, g)
         if leg is None:
             leg = _l_route_edge(a, b, self.existing)
         return leg

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import re
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 
 @dataclass
@@ -25,7 +26,12 @@ class Component:
     # Local body bbox (xmin, ymin, xmax, ymax) — area where wires must NOT pass.
     # Defaults to a small box; component subclasses override to match their body.
     # Lead/pin areas are intentionally excluded so wires can reach pins.
-    BODY: tuple[float, float, float, float] = (-22, -15, 22, 15)
+    #
+    # ClassVar is essential: a plain annotation would make this a dataclass
+    # *field*, and the generated __init__ would then write the base default onto
+    # every instance — silently shadowing every subclass override, which is
+    # exactly what happened until this was fixed.
+    BODY: ClassVar[tuple[float, float, float, float]] = (-22, -15, 22, 15)
 
     def pin(self, name: str) -> PinDef:
         for p in self.pins:
@@ -70,6 +76,29 @@ class Component:
             bx0, by0, bx1, by1 = min(xs), min(ys), max(xs), max(ys)
         return (self.x + bx0, self.y + by0,
                 self.x + bx1, self.y + by1)
+
+    def label_boxes(self) -> list[tuple[float, float, float, float]]:
+        """Approximate boxes of the symbol's texts, in absolute coords.
+
+        Labels are drawn outside `BODY` (that is the point of them), so the
+        router would happily lay a wire straight across a value like "AMS1117".
+        These boxes are handed to the router as *soft* obstacles: crossing them
+        costs extra but is still allowed, because a label often sits right next
+        to the pin a wire has to reach.
+
+        `_label()` keeps text upright regardless of rotation, so only the anchor
+        point rotates; the box itself stays axis-aligned.
+        """
+        out: list[tuple[float, float, float, float]] = []
+        for lx0, ly0, lx1, ly1 in _label_rects(self.svg_symbol()):
+            cx, cy = (lx0 + lx1) / 2, (ly0 + ly1) / 2
+            hw, hh = (lx1 - lx0) / 2, (ly1 - ly0) / 2
+            if self.flip:
+                cx = -cx
+            cx, cy = _rotate(cx, cy, self.rotation)
+            out.append((self.x + cx - hw, self.y + cy - hh,
+                        self.x + cx + hw, self.y + cy + hh))
+        return out
 
     def svg_symbol(self) -> str:
         raise NotImplementedError
@@ -200,10 +229,43 @@ def _corner_label(x, y, txt, rotation: int, size: int = 10,
                   size=size, color=color)
     # Out here a wire may still pass underneath; a white halo keeps the text
     # readable (symbols are drawn above the wires).
+    # (Inserted after font-size so _LABEL_RE still reads the text back.)
     return text.replace(
-        ' font-family=',
+        ' fill="',
         ' stroke="#FFFFFF" stroke-width="3" stroke-linejoin="round" '
-        'paint-order="stroke" font-family=', 1)
+        'paint-order="stroke" fill="', 1)
+
+
+# Reads back what _label() produced. Safe for the same reason mirror_symbol is:
+# every text in this module comes from that one function.
+_LABEL_RE = re.compile(
+    r'<text x="(?P<x>-?[\d.]+)" y="(?P<y>-?[\d.]+)" text-anchor="(?P<anchor>[a-z]+)" '
+    r'font-family="sans-serif" font-size="(?P<size>[\d.]+)"[^>]*>(?P<body>.*?)</text>',
+    re.S,
+)
+_TSPAN_RE = re.compile(r"<tspan[^>]*>(.*?)</tspan>", re.S)
+LABEL_CHAR_W = 0.55  # average glyph width of sans-serif, as a fraction of size
+
+
+def _label_rects(svg: str) -> list[tuple[float, float, float, float]]:
+    """Estimated (x0, y0, x1, y1) of every label, in symbol-local coordinates."""
+    out: list[tuple[float, float, float, float]] = []
+    for m in _LABEL_RE.finditer(svg):
+        body = m.group("body")
+        lines = _TSPAN_RE.findall(body) or [body]
+        text = [re.sub(r"<[^>]+>", "", ln) for ln in lines]
+        longest = max((len(ln) for ln in text), default=0)
+        if not longest:
+            continue
+        size = float(m.group("size"))
+        w = longest * size * LABEL_CHAR_W
+        h = len(text) * (size + 1)
+        x, y = float(m.group("x")), float(m.group("y"))
+        anchor = m.group("anchor")
+        x0 = x - w / 2 if anchor == "middle" else (x if anchor == "start" else x - w)
+        y0 = y - size * 0.8
+        out.append((x0, y0, x0 + w, y0 + h))
+    return out
 
 
 # ── Two-terminal base ───────────────────────────────────────────────────────

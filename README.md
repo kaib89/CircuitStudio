@@ -13,7 +13,7 @@ keeps those two jobs in separate files, so neither side overwrites the other.
 
 | File | Contains | Owned by |
 |------|----------|----------|
-| `<name>.circuit.json` | components, nets, notes | the assistant |
+| `<name>.circuit.json` | components, nets, notes, no-connects | the assistant |
 | `<name>.layout.json` | positions, rotation, wires and their waypoints, note boxes | you |
 
 The assistant can rewrite the circuit at any time and your arrangement survives:
@@ -78,13 +78,13 @@ currently running.
 ```
 
 Tools: `list_projects`, `list_component_types`, `get_circuit`, `write_circuit`,
-`update_circuit`, `open_editor`.
+`update_circuit`, `open_editor`, `review_project`.
 
 `update_circuit` edits an existing netlist in place — add, replace or remove
-parts, nets and notes, connect or disconnect pins — so the assistant does not
-have to resend the whole circuit for a small change. Removing a part also drops
-its pins from every net; connecting a pin that already sits in another net moves
-it rather than creating a short.
+parts, nets and notes, connect or disconnect pins, mark pins as no-connect — so
+the assistant does not have to resend the whole circuit for a small change.
+Removing a part also drops its pins from every net; connecting a pin that
+already sits in another net moves it rather than creating a short.
 
 `write_circuit` validates before it writes. Unknown component types, wrong pin
 names, bad note anchors, duplicate IDs, duplicate net names and pins that sit in
@@ -97,6 +97,35 @@ NOT written — please fix:
 - Unknown component type 'widerstand' for 'R1'. Known types: ...
 - Net 'GND': 'U1' has no pin 'MASSE'. Available: GND, TRG, OUT, RST, CTL, THR, DIS, VCC
 ```
+
+On top of that it runs a rule check and reports what is questionable rather than
+wrong — a pin nobody wired up, a net name typo that quietly split one node in
+two (each half then connects a single pin), a part wired to nothing:
+
+```
+1 warning(s):
+- R2.2 is not connected to anything. Wire it up, or list it in "nc" to mark it
+  as deliberately open.
+```
+
+## Getting the result back to the assistant
+
+The automatic arrangement is not worth showing anyone — it exists so you have
+something to drag around, nothing more. So the assistant does not get to see it.
+
+When your layout is ready, press **Hand back ✓**. The browser renders the
+schematic to a PNG, and `review_project` then returns that picture together with
+the rule check. The assistant sees the drawing you actually made and can check
+its own wiring against it.
+
+The button turns green while the picture is current and amber again as soon as
+you move something, so it is always clear whether the assistant is looking at
+the latest state.
+
+(The rasterising happens in the browser on purpose: Python cannot turn SVG into
+a bitmap without a rendering library, and this app has no dependencies. The
+browser is already here and is the thing that defines what the drawing looks
+like, so the result is WYSIWYG by construction.)
 
 ## Circuit format
 
@@ -117,7 +146,8 @@ NOT written — please fix:
   ],
   "notes": [
     { "id": "N1", "text": "220Ω gives about 6 mA at 3.3 V.", "anchor": "R1" }
-  ]
+  ],
+  "nc": ["U1.EN"]
 }
 ```
 
@@ -126,6 +156,11 @@ the result.
 
 Pins are referenced as `ComponentID.PinName`. Call `list_component_types` for
 the exact pin names of every symbol.
+
+`nc` lists pins that are meant to stay unconnected. They get the standard
+no-connect cross in the drawing and stop being reported as a missing connection
+— the difference between "left open on purpose" and "forgotten" is worth saying
+out loud. For the reason behind it, anchor a note to the same pin.
 
 Nets named `VCC`, `VDD`, `3V3`, `5V`… are drawn red; `GND`, `VSS`… black and
 thicker.
@@ -152,6 +187,8 @@ ICs, connectors and board symbols (`esp32`, `rpi`, `pico`, `arduino_uno`,
 | Guide a wire | click it to add a waypoint, drag the waypoint, double-click to remove |
 | Redraw all wires | **Reroute** — forgets the stored wires and routes everything afresh |
 | Trace a net | hover a wire — the whole net stays lit and its pins are listed |
+| Spot loose ends | pins in no net get a dashed red ring (**Open pins**) |
+| Finish | **Hand back ✓** — renders a picture the assistant can review |
 | Export | **Export SVG**, written next to the project |
 
 Dragging snaps to the grid, but pin alignment wins over the grid (for parts
@@ -187,6 +224,7 @@ circuitstudio/
   registry.py    type name -> symbol
   document.py    the two JSON documents, merging, auto-placement
   router.py      orthogonal routing (A*) and junction detection
+  erc.py         rule check: open pins, split nodes, dead nets
   scene.py       geometry; feeds both the editor and the SVG export
   server.py      local HTTP server (127.0.0.1 only)
   mcp_server.py  MCP server for assistants
