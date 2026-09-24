@@ -6,7 +6,7 @@ import traceback
 from pathlib import Path
 
 from .document import list_projects
-from .server import serve
+from .server import find_running_editor, serve
 
 # Project root = folder containing this package. Everything stays relative so
 # the whole folder can be moved and still works.
@@ -30,6 +30,14 @@ def main(argv: list[str] | None = None) -> int:
     if not name:
         existing = list_projects(projects_dir)
         name = existing[0] if existing else "demo"
+
+    running = find_running_editor(projects_dir, name)
+    if running:
+        print(f"'{name}' is already open at {running} — showing that editor.")
+        if not args.no_browser:
+            import webbrowser
+            webbrowser.open(running)
+        return 0
 
     serve(projects_dir, name,
           open_browser=not args.no_browser,

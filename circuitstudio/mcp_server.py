@@ -19,6 +19,7 @@ from typing import Any
 from .document import Project, is_safe_name, list_projects
 from .registry import CONFIGURABLE_TYPES, KNOWN_TYPES, build_component
 from .scene import Scene
+from .server import find_running_editor
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECTS_DIR = ROOT / "projects"
@@ -567,8 +568,22 @@ def tool_update_circuit(args: dict[str, Any]) -> str:
     return result
 
 
+def _open_browser(url: str) -> None:
+    """webbrowser may start helpers that inherit our stdout (the protocol
+    channel), so do it from a child whose output goes nowhere."""
+    subprocess.Popen(
+        [sys.executable, "-c", "import sys, webbrowser; webbrowser.open(sys.argv[1])", url],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
 def tool_open_editor(args: dict[str, Any]) -> str:
     name = _require_name(args)
+    running = find_running_editor(PROJECTS_DIR, name)
+    if running:
+        _open_browser(running)
+        return (f"The editor for '{name}' is already running at {running} — "
+                f"opened it in the browser instead of starting a second one.")
     creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
     subprocess.Popen(
         [sys.executable, "-m", "circuitstudio", name],

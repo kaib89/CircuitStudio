@@ -28,6 +28,7 @@ const btnDistX = document.getElementById('btnDistX');
 const btnDistY = document.getElementById('btnDistY');
 
 let scene = null;
+let lastProject = null;
 let view = { x: 0, y: 0, w: 1000, h: 700 };
 let grid = 20;
 let lastVersion = -1;
@@ -396,6 +397,7 @@ function render() {
 function applyPayload(payload) {
   scene = payload.scene;
   lastVersion = payload.version;
+  lastProject = payload.project;
   grid = scene.grid || 20;
   gridSelect.value = String(grid);
   chkGrid.checked = payload.showGrid !== false;
@@ -965,10 +967,14 @@ document.getElementById('btnExport').addEventListener('click', async () => {
 });
 
 projectSelect.addEventListener('change', async () => {
+  const previous = scene ? lastProject : null;
   try {
     applyPayload(await api('/api/open', { name: projectSelect.value }));
     fitView();
-  } catch (err) { setStatus('Error: ' + err.message); }
+  } catch (err) {
+    if (previous) projectSelect.value = previous;   // we did not switch
+    setStatus('Error: ' + err.message);
+  }
 });
 
 chkNotes.addEventListener('change', renderNotes);
@@ -992,7 +998,10 @@ setInterval(async () => {
   if (drag || pan || wpDrag || wireClick || band || noteDrag) return;
   try {
     const v = await api('/api/version');
-    if (v.version !== lastVersion) await loadState(false);
+    // Another tab may have switched this editor to a different project; its
+    // version counter restarts, so the number alone can look unchanged.
+    if (v.project !== lastProject) await loadState(true);
+    else if (v.version !== lastVersion) await loadState(false);
   } catch (err) { /* server gone; keep the last drawing on screen */ }
 }, 1500);
 

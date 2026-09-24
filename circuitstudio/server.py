@@ -24,11 +24,38 @@ STATIC = {
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
 MAX_BODY = 4 * 1024 * 1024
+PORT_RANGE = range(8730, 8750)
+
+
+def find_running_editor(projects_dir: Path, name: str,
+                        skip_port: int | None = None) -> str | None:
+    """URL of an editor that already has this project open, if any.
+
+    Two editors on one project would each save their own in-memory layout
+    over the other's, so callers reuse the running one instead. Asking the
+    ports directly (rather than keeping a registry file) cannot go stale.
+    """
+    import urllib.request
+    folder = str(Path(projects_dir).resolve())
+    for port in PORT_RANGE:
+        if port == skip_port:
+            continue
+        url = f"http://127.0.0.1:{port}/"
+        try:
+            with urllib.request.urlopen(url + "api/version", timeout=0.3) as res:
+                info = json.loads(res.read().decode("utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (isinstance(info, dict) and info.get("project") == name
+                and info.get("folder") == folder):
+            return url
+    return None
 
 
 class AppState:
     def __init__(self, projects_dir: Path, name: str):
         self.projects_dir = projects_dir
+        self.port: int | None = None
         self.lock = threading.Lock()
         self.project = Project(projects_dir, name).load()
 
@@ -112,7 +139,8 @@ class Handler(BaseHTTPRequestHandler):
             with self.state.lock:
                 self.state.project.reload_circuit_if_changed()
                 payload = {"version": self.state.project.version,
-                           "project": self.state.project.name}
+                           "project": self.state.project.name,
+                           "folder": str(self.state.projects_dir.resolve())}
             self._json(payload)
             return
 
@@ -225,6 +253,11 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(name, str) or not is_safe_name(name):
                 self._error(400, "invalid project name")
                 return
+            other = find_running_editor(self.state.projects_dir, name,
+                                        skip_port=self.state.port)
+            if other:
+                self._error(409, f"'{name}' is already open in another editor: {other}")
+                return
             with self.state.lock:
                 self.state.open(name)
                 payload = self.state.scene_payload()
@@ -254,7 +287,7 @@ class _Server(ThreadingHTTPServer):
 
 def _pick_port(preferred: int = 8730) -> int:
     import socket
-    for port in range(preferred, preferred + 20):
+    for port in range(preferred, preferred + len(PORT_RANGE)):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
                 s.bind(("127.0.0.1", port))
@@ -268,6 +301,7 @@ def serve(projects_dir: Path, project_name: str,
           open_browser: bool = True, port: int | None = None) -> None:
     Handler.state = AppState(projects_dir, project_name)
     port = port or _pick_port()
+    Handler.state.port = port
     url = f"http://127.0.0.1:{port}/"
 
     try:

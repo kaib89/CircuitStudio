@@ -39,7 +39,10 @@ python -m circuitstudio [project] [--port 8730] [--no-browser]
 ```
 
 The browser opens automatically. The console window stays open — closing it
-stops the editor.
+stops the editor. If that project is already open in a running editor, the
+existing one is shown instead of starting a second (two editors would keep
+overwriting each other's layout); `open_editor` from the assistant behaves the
+same way.
 
 ## Connecting an assistant (MCP)
 

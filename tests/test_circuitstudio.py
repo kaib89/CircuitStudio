@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -336,6 +337,60 @@ class McpTests(TmpProjects):
                              input=msgs, capture_output=True, text=True, timeout=30)
         replies = [json.loads(line) for line in out.stdout.splitlines()]
         self.assertEqual(replies[-1], {"jsonrpc": "2.0", "id": 7, "result": {}})
+
+
+class SingleInstanceTests(TmpProjects):
+    def start(self, name):
+        from circuitstudio.server import AppState, Handler, _pick_port, _Server
+        for n in (name, "other"):
+            q = self.project([{"id": "R1", "type": "resistor"}])
+            q.name = n
+            q.save_circuit()
+        state = AppState(self.dir, name)
+        port = _pick_port()
+        state.port = port
+
+        class H(Handler):      # one handler class per server: state is per class
+            pass
+        H.state = state
+        httpd = _Server(("127.0.0.1", port), H)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return f"http://127.0.0.1:{port}/"
+
+    def test_running_editor_is_found_and_reused(self) -> None:
+        from circuitstudio.server import find_running_editor
+        url = self.start("t")
+        self.assertEqual(find_running_editor(self.dir, "t"), url)
+        self.assertIsNone(find_running_editor(self.dir, "other"))
+        self.assertIsNone(find_running_editor(self.dir / "elsewhere", "t"))
+
+        opened = []
+        orig_dir, orig_open = mcp_server.PROJECTS_DIR, mcp_server._open_browser
+        mcp_server.PROJECTS_DIR, mcp_server._open_browser = self.dir, opened.append
+        try:
+            text = mcp_server.tool_open_editor({"project": "t"})
+        finally:
+            mcp_server.PROJECTS_DIR, mcp_server._open_browser = orig_dir, orig_open
+        self.assertIn("already running", text)
+        self.assertEqual(opened, [url])
+
+        out = subprocess.run([sys.executable, "-m", "circuitstudio", "t", "--no-browser",
+                              "--projects-dir", str(self.dir)],
+                             cwd=ROOT, capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("already open", out.stdout)
+
+    def test_switching_to_a_project_open_elsewhere_is_refused(self) -> None:
+        self.start("t")
+        other = self.start("other")
+        req = urllib.request.Request(other + "api/open", data=b'{"name": "t"}',
+                                     method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=30)
+        self.assertEqual(ctx.exception.code, 409)
 
 
 class ServerTests(TmpProjects):
