@@ -9,8 +9,11 @@ touches the electrical description.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +21,8 @@ from .registry import build_component
 from .symbols import Component
 
 DEFAULT_GRID = 20
-AUTO_STEP = 140  # px between auto-placed components
+AUTO_STEP = 60   # cell size of the auto-placement grid; big parts take several
+AUTO_GAP = 25    # breathing room around a symbol, in px
 DEFAULT_NOTE_W = 220
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -28,20 +32,28 @@ _VCC_NAMES = {"vcc", "vdd", "v+", "5v", "3v3", "3.3v", "9v", "12v", "24v", "vin"
 _GND_NAMES = {"gnd", "vss", "v-", "0v", "agnd", "dgnd", "pgnd"}
 
 
-def net_color(name: str) -> str:
+def is_supply_net(name: str) -> bool:
     n = name.lower().strip()
-    if n in _VCC_NAMES or any(n.startswith(p) for p in ("vcc", "vdd", "v+", "+", "5v", "3v")):
+    return n in _VCC_NAMES or n.startswith(("vcc", "vdd", "v+", "+", "5v", "3v"))
+
+
+def is_ground_net(name: str) -> bool:
+    n = name.lower().strip()
+    return n in _GND_NAMES or n.startswith(("gnd", "vss"))
+
+
+def net_color(name: str) -> str:
+    if is_supply_net(name):
         return "#CC0000"
-    if n in _GND_NAMES or n.startswith("gnd") or n.startswith("vss"):
+    if is_ground_net(name):
         return "#000000"
     return "#333333"
 
 
 def net_width(name: str) -> float:
-    n = name.lower().strip()
-    if n in _GND_NAMES or n.startswith("gnd") or n.startswith("vss"):
+    if is_ground_net(name):
         return 2.5
-    if n in _VCC_NAMES or any(n.startswith(p) for p in ("vcc", "vdd")):
+    if is_supply_net(name):
         return 2.0
     return 1.5
 
@@ -79,6 +91,8 @@ class Project:
                                        "wires": {}, "view": None}
         self.version = 0
         self._circuit_mtime: float = 0.0
+        self._backed_up = False
+        self.routes_dirty = False    # set by Scene when it produced new wires
 
     # ── Paths ────────────────────────────────────────────────────────────────
 
@@ -98,6 +112,46 @@ class Project:
     def svg_path(self) -> Path:
         return self.folder / f"{self.name}.svg"
 
+    @property
+    def png_path(self) -> Path:
+        return self.folder / f"{self.name}.png"
+
+    # ── Review ───────────────────────────────────────────────────────────────
+
+    def layout_fingerprint(self) -> str:
+        """Short digest of everything the human arranges.
+
+        Lets `review` state say not just *that* the layout was signed off, but
+        whether it has been touched since — a stale picture is worse than none.
+        """
+        payload = json.dumps(
+            {"positions": self.layout.get("positions", {}),
+             "wires": self.layout.get("wires", {}),
+             "notes": self.layout.get("notes", {})},
+            sort_keys=True, ensure_ascii=False)
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+    def mark_reviewed(self) -> dict[str, Any]:
+        """Record that the arrangement is finished and ready to be handed back."""
+        info = {
+            "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "layout": self.layout_fingerprint(),
+            "parts": len(self.circuit.get("components", [])),
+        }
+        self.layout["review"] = info
+        self.version += 1
+        return info
+
+    def review_state(self) -> dict[str, Any]:
+        info = self.layout.get("review")
+        if not isinstance(info, dict):
+            return {"reviewed": False, "current": False}
+        return {
+            "reviewed": True,
+            "at": info.get("at", ""),
+            "current": info.get("layout") == self.layout_fingerprint(),
+        }
+
     # ── Load / save ──────────────────────────────────────────────────────────
 
     def load(self) -> "Project":
@@ -109,7 +163,11 @@ class Project:
         self.circuit.setdefault("components", [])
         self.circuit.setdefault("nets", [])
         self.circuit.setdefault("notes", [])
+        self.circuit.setdefault("nc", [])
+        return self.load_layout()
 
+    def load_layout(self) -> "Project":
+        """Load only layout.json (plus auto-placement for the current circuit)."""
         layout = _read_json(self.layout_path)
         if layout is not None:
             self.layout = layout
@@ -118,6 +176,7 @@ class Project:
         self.layout.setdefault("positions", {})
         self.layout.setdefault("wires", {})
         self.layout.setdefault("notes", {})
+        self.layout.setdefault("routes", {})
         self.layout.setdefault("view", None)
 
         self.autoplace()
@@ -144,21 +203,41 @@ class Project:
         self.circuit.setdefault("components", [])
         self.circuit.setdefault("nets", [])
         self.circuit.setdefault("notes", [])
+        self.circuit.setdefault("nc", [])
         self.autoplace()
         self.autoplace_notes()
         self.version += 1
         return True
 
-    def save_layout(self) -> None:
-        # Keep the previous state around: an accidental auto-arrange or a bad
-        # drag is otherwise unrecoverable once the editor is closed and the
-        # in-memory undo stack is gone.
-        if self.layout_path.exists():
+    def save_layout(self, backup: bool = False) -> None:
+        """Write layout.json, keeping a recoverable copy of an older state.
+
+        The backup is taken on the first save of this session (i.e. the layout
+        as it was when the editor was opened, or before the assistant wrote the
+        circuit) and again whenever `backup` is set, e.g. right before an
+        auto-arrange. Backing up on *every* save would be useless: panning
+        alone saves the view, so the copy would be overwritten within a second
+        of the mistake it is meant to undo.
+        """
+        if (backup or not self._backed_up) and self.layout_path.exists():
             try:
                 self.layout_backup_path.write_bytes(self.layout_path.read_bytes())
+                self._backed_up = True
             except OSError:
                 pass
         _write_json(self.layout_path, self.layout)
+
+    def save_routes(self) -> None:
+        """Persist wires a Scene just (re)computed, so they are reused next time."""
+        if self.routes_dirty:
+            self.routes_dirty = False
+            self.save_layout()
+
+    def clear_routes(self) -> None:
+        """Forget all stored wires; the next Scene routes everything afresh."""
+        self.layout["routes"] = {}
+        self._route_cache = None
+        self.version += 1
 
     def save_circuit(self) -> None:
         _write_json(self.circuit_path, self.circuit)
@@ -180,47 +259,55 @@ class Project:
     def autoplace(self) -> list[str]:
         """Give every component without a stored position a rough spot.
 
+        Not a real placer — the whole point of CircuitStudio is that a human
+        does the arranging. It only has to produce something readable enough to
+        start dragging from, which means two things above all: nothing overlaps,
+        and connected parts end up near each other.
+
         Stale entries for deleted components are deliberately kept — if the LLM
         re-adds the same ID later it lands back where you put it.
         """
         positions: dict[str, Any] = self.layout["positions"]
-        ids = [str(s.get("id", "")) for s in self.circuit.get("components", [])]
-        unplaced = [i for i in ids if i and i not in positions]
+        specs = {str(s.get("id", "")): s for s in self.circuit.get("components", [])
+                 if str(s.get("id", ""))}
+        ids = list(specs)
+        unplaced = [i for i in ids if i not in positions]
         if not unplaced:
             return []
 
+        footprints = {cid: self._footprint_cells(specs[cid]) for cid in ids}
         occupied: set[tuple[int, int]] = set()
         for cid in ids:
             p = positions.get(cid)
             if p:
-                occupied.add((round(p.get("x", 0) / AUTO_STEP),
-                              round(p.get("y", 0) / AUTO_STEP)))
+                self._occupy(occupied, self._to_cell(p), footprints[cid])
 
         adj = self._adjacency()
 
-        def free_cell(cell: tuple[int, int]) -> tuple[int, int]:
-            if cell not in occupied:
+        def free_cell(cell: tuple[int, int], size: tuple[int, int]) -> tuple[int, int]:
+            if not self._collides(occupied, cell, size):
                 return cell
-            for radius in range(1, 40):
+            for radius in range(1, 60):
                 for dr in range(-radius, radius + 1):
                     for dc in range(-radius, radius + 1):
                         if abs(dr) != radius and abs(dc) != radius:
                             continue
                         cand = (cell[0] + dc, cell[1] + dr)
-                        if cand not in occupied:
+                        if not self._collides(occupied, cand, size):
                             return cand
-            return (cell[0] + len(occupied) + 1, cell[1])
+            return (cell[0] + 2 * len(occupied) + 1, cell[1])
 
-        for cid in unplaced:
+        for cid in self._placement_order(unplaced, adj, positions):
             anchors = [positions[n] for n in adj.get(cid, ()) if n in positions]
             if anchors:
                 ax = sum(a.get("x", 0) for a in anchors) / len(anchors)
                 ay = sum(a.get("y", 0) for a in anchors) / len(anchors)
                 cell = (round(ax / AUTO_STEP), round(ay / AUTO_STEP))
+                cell = self._preferred_cell(specs[cid], cell)
             else:
                 cell = (0, 0)
-            cell = free_cell(cell)
-            occupied.add(cell)
+            cell = free_cell(cell, footprints[cid])
+            self._occupy(occupied, cell, footprints[cid])
             positions[cid] = {
                 "x": cell[0] * AUTO_STEP,
                 "y": cell[1] * AUTO_STEP,
@@ -228,6 +315,94 @@ class Project:
                 "auto": True,
             }
         return unplaced
+
+    # ── Auto-placement helpers ───────────────────────────────────────────────
+
+    @staticmethod
+    def _to_cell(pos: dict[str, Any]) -> tuple[int, int]:
+        return (round(float(pos.get("x", 0)) / AUTO_STEP),
+                round(float(pos.get("y", 0)) / AUTO_STEP))
+
+    def _footprint_cells(self, spec: dict[str, Any]) -> tuple[int, int]:
+        """How many cells a symbol needs, labels included.
+
+        The old placer used one fixed cell for everything, so an ESP32 board
+        (144 px tall) landed inside a 140 px slot and overlapped its neighbour.
+        """
+        try:
+            comp = build_component(spec)
+        except (ValueError, KeyError, TypeError):
+            return (1, 1)
+        boxes = [comp.body_bbox(), *comp.label_boxes()]
+        x0 = min(b[0] for b in boxes)
+        y0 = min(b[1] for b in boxes)
+        x1 = max(b[2] for b in boxes)
+        y1 = max(b[3] for b in boxes)
+        # Symbols sit at their centre, so the half-extent decides the span.
+        half_w = max(abs(x0), abs(x1)) + AUTO_GAP
+        half_h = max(abs(y0), abs(y1)) + AUTO_GAP
+        return (max(1, int(math.ceil(2 * half_w / AUTO_STEP))),
+                max(1, int(math.ceil(2 * half_h / AUTO_STEP))))
+
+    @staticmethod
+    def _cells_of(cell: tuple[int, int], size: tuple[int, int]):
+        cw, ch = size
+        x0 = cell[0] - (cw - 1) // 2
+        y0 = cell[1] - (ch - 1) // 2
+        for dx in range(cw):
+            for dy in range(ch):
+                yield (x0 + dx, y0 + dy)
+
+    @classmethod
+    def _occupy(cls, occupied: set[tuple[int, int]], cell: tuple[int, int],
+                size: tuple[int, int]) -> None:
+        occupied.update(cls._cells_of(cell, size))
+
+    @classmethod
+    def _collides(cls, occupied: set[tuple[int, int]], cell: tuple[int, int],
+                  size: tuple[int, int]) -> bool:
+        return any(c in occupied for c in cls._cells_of(cell, size))
+
+    @staticmethod
+    def _preferred_cell(spec: dict[str, Any],
+                        cell: tuple[int, int]) -> tuple[int, int]:
+        """Power symbols read best below (ground) or above (supply) their net."""
+        ctype = str(spec.get("type", "")).lower()
+        if ctype == "ground":
+            return (cell[0], cell[1] + 1)
+        if ctype in ("vcc", "vdd"):
+            return (cell[0], cell[1] - 1)
+        return cell
+
+    @staticmethod
+    def _placement_order(unplaced: list[str], adj: dict[str, set[str]],
+                         positions: dict[str, Any]) -> list[str]:
+        """Place well-connected parts first, then walk outwards along the nets.
+
+        In document order a part is usually placed before any of its neighbours,
+        so the anchor average has nothing to work with and everything piles up
+        around the origin.
+        """
+        todo = set(unplaced)
+        order: list[str] = []
+        # Seeds: parts next to something already positioned, else the hub.
+        while todo:
+            seeds = sorted(
+                (c for c in todo if any(n in positions or n in order
+                                        for n in adj.get(c, ()))),
+                key=lambda c: -len(adj.get(c, ())),
+            )
+            start = seeds[0] if seeds else max(
+                sorted(todo), key=lambda c: len(adj.get(c, ())))
+            queue = [start]
+            while queue:
+                cid = queue.pop(0)
+                if cid not in todo:
+                    continue
+                todo.discard(cid)
+                order.append(cid)
+                queue.extend(sorted(n for n in adj.get(cid, ()) if n in todo))
+        return order
 
     def set_positions(self, updates: dict[str, Any]) -> None:
         """Store positions as given.
@@ -255,15 +430,20 @@ class Project:
 
         `edge` is the key produced by router.edge_key, e.g. "R1.2|U1.DIS".
         An empty list removes the guidance and returns the wire to auto-routing.
+
+        Snapping is the editor's job (grid, or a pin's x/y when one is close):
+        pins are often off the grid, and forcing waypoints onto it would put a
+        jog into every wire that should run straight into such a pin.
         """
         wires: dict[str, Any] = self.layout.setdefault("wires", {})
-        grid = max(1, int(self.layout.get("grid", DEFAULT_GRID)))
         cleaned: list[list[float]] = []
         for p in points:
             if not isinstance(p, (list, tuple)) or len(p) != 2:
                 continue
-            cleaned.append([round(float(p[0]) / grid) * grid,
-                            round(float(p[1]) / grid) * grid])
+            try:
+                cleaned.append([round(float(p[0]), 1), round(float(p[1]), 1)])
+            except (TypeError, ValueError):
+                continue
         if cleaned:
             wires[edge] = cleaned
         else:

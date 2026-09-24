@@ -6,6 +6,8 @@ apart.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import threading
 import webbrowser
@@ -23,12 +25,40 @@ STATIC = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
-MAX_BODY = 4 * 1024 * 1024
+MAX_BODY = 32 * 1024 * 1024   # a full-page PNG of a large schematic fits in this
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+PORT_RANGE = range(8730, 8750)
+
+
+def find_running_editor(projects_dir: Path, name: str,
+                        skip_port: int | None = None) -> str | None:
+    """URL of an editor that already has this project open, if any.
+
+    Two editors on one project would each save their own in-memory layout
+    over the other's, so callers reuse the running one instead. Asking the
+    ports directly (rather than keeping a registry file) cannot go stale.
+    """
+    import urllib.request
+    folder = str(Path(projects_dir).resolve())
+    for port in PORT_RANGE:
+        if port == skip_port:
+            continue
+        url = f"http://127.0.0.1:{port}/"
+        try:
+            with urllib.request.urlopen(url + "api/version", timeout=0.3) as res:
+                info = json.loads(res.read().decode("utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (isinstance(info, dict) and info.get("project") == name
+                and info.get("folder") == folder):
+            return url
+    return None
 
 
 class AppState:
     def __init__(self, projects_dir: Path, name: str):
         self.projects_dir = projects_dir
+        self.port: int | None = None
         self.lock = threading.Lock()
         self.project = Project(projects_dir, name).load()
 
@@ -36,13 +66,16 @@ class AppState:
         self.project = Project(self.projects_dir, name).load()
 
     def scene_payload(self) -> dict[str, Any]:
+        scene = Scene(self.project)
+        self.project.save_routes()
         return {
             "version": self.project.version,
             "project": self.project.name,
             "projects": list_projects(self.projects_dir),
-            "scene": Scene(self.project).to_dict(),
+            "scene": scene.to_dict(),
             "view": self.project.layout.get("view"),
             "showGrid": bool(self.project.layout.get("showGrid", True)),
+            "review": self.project.review_state(),
         }
 
 
@@ -110,7 +143,8 @@ class Handler(BaseHTTPRequestHandler):
             with self.state.lock:
                 self.state.project.reload_circuit_if_changed()
                 payload = {"version": self.state.project.version,
-                           "project": self.state.project.name}
+                           "project": self.state.project.name,
+                           "folder": str(self.state.projects_dir.resolve())}
             self._json(payload)
             return
 
@@ -196,9 +230,23 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/autoarrange":
             with self.state.lock:
                 proj = self.state.project
-                proj.layout["positions"] = {}
+                # Locked parts are exactly the ones the user asked to keep.
+                proj.layout["positions"] = {
+                    cid: p for cid, p in proj.layout["positions"].items()
+                    if isinstance(p, dict) and p.get("locked")
+                }
                 proj.layout["wires"] = {}  # old guidance points make no sense now
+                proj.clear_routes()
                 proj.autoplace()
+                proj.save_layout(backup=True)
+                payload = self.state.scene_payload()
+            self._json(payload)
+            return
+
+        if path == "/api/reroute":
+            with self.state.lock:
+                proj = self.state.project
+                proj.clear_routes()
                 proj.save_layout()
                 payload = self.state.scene_payload()
             self._json(payload)
@@ -208,6 +256,11 @@ class Handler(BaseHTTPRequestHandler):
             name = (body or {}).get("name") if isinstance(body, dict) else None
             if not isinstance(name, str) or not is_safe_name(name):
                 self._error(400, "invalid project name")
+                return
+            other = find_running_editor(self.state.projects_dir, name,
+                                        skip_port=self.state.port)
+            if other:
+                self._error(409, f"'{name}' is already open in another editor: {other}")
                 return
             with self.state.lock:
                 self.state.open(name)
@@ -219,9 +272,44 @@ class Handler(BaseHTTPRequestHandler):
             with self.state.lock:
                 proj = self.state.project
                 svg = Scene(proj).to_svg()
+                proj.save_routes()
                 proj.svg_path.write_text(svg, encoding="utf-8")
                 out = str(proj.svg_path)
             self._json({"path": out})
+            return
+
+        if path == "/api/svg":
+            with self.state.lock:
+                svg = Scene(self.state.project).to_svg()
+                self.state.project.save_routes()
+            self._json({"svg": svg})
+            return
+
+        if path == "/api/review":
+            # The browser hands back a PNG it rasterised from our own SVG. Doing
+            # it there keeps the app dependency-free — Python has no way to turn
+            # SVG into a bitmap — and it is WYSIWYG by construction.
+            png = (body or {}).get("png") if isinstance(body, dict) else None
+            data = b""
+            if isinstance(png, str):
+                try:
+                    data = base64.b64decode(png.split(",", 1)[-1], validate=True)
+                except (binascii.Error, ValueError):
+                    self._error(400, "png is not valid base64")
+                    return
+                if not data.startswith(PNG_MAGIC):
+                    self._error(400, "png payload is not a PNG")
+                    return
+            with self.state.lock:
+                proj = self.state.project
+                proj.svg_path.write_text(Scene(proj).to_svg(), encoding="utf-8")
+                if data:
+                    proj.png_path.write_bytes(data)
+                info = proj.mark_reviewed()
+                proj.save_layout()
+                payload = self.state.scene_payload()
+            payload["reviewedAt"] = info["at"]
+            self._json(payload)
             return
 
         self._error(404, "not found")
@@ -237,7 +325,7 @@ class _Server(ThreadingHTTPServer):
 
 def _pick_port(preferred: int = 8730) -> int:
     import socket
-    for port in range(preferred, preferred + 20):
+    for port in range(preferred, preferred + len(PORT_RANGE)):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
                 s.bind(("127.0.0.1", port))
@@ -251,6 +339,7 @@ def serve(projects_dir: Path, project_name: str,
           open_browser: bool = True, port: int | None = None) -> None:
     Handler.state = AppState(projects_dir, project_name)
     port = port or _pick_port()
+    Handler.state.port = port
     url = f"http://127.0.0.1:{port}/"
 
     try:

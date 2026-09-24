@@ -12,13 +12,17 @@ const labelsG = document.getElementById('netLabels');
 const wpG = document.getElementById('waypoints');
 const compsG = document.getElementById('components');
 const notesG = document.getElementById('notes');
+const ncG = document.getElementById('noConnect');
+const openPinsG = document.getElementById('openPins');
 const chkNotes = document.getElementById('chkNotes');
+const chkOpen = document.getElementById('chkOpen');
 const netPinsG = document.getElementById('netPins');
 const guidesG = document.getElementById('guides');
 const bandEl = document.getElementById('band');
 const gridRectEl = document.getElementById('gridRect');
 const chkGrid = document.getElementById('chkGrid');
 const errorsBox = document.getElementById('errors');
+const warningsBox = document.getElementById('warnings');
 const statusEl = document.getElementById('status');
 const projectSelect = document.getElementById('projectSelect');
 const gridSelect = document.getElementById('gridSelect');
@@ -26,8 +30,10 @@ const btnAlignX = document.getElementById('btnAlignX');
 const btnAlignY = document.getElementById('btnAlignY');
 const btnDistX = document.getElementById('btnDistX');
 const btnDistY = document.getElementById('btnDistY');
+const btnHandBack = document.getElementById('btnHandBack');
 
 let scene = null;
+let lastProject = null;
 let view = { x: 0, y: 0, w: 1000, h: 700 };
 let grid = 20;
 let lastVersion = -1;
@@ -42,10 +48,13 @@ let spaceDown = false;
 let viewSaveTimer = null;
 let lastWpClick = null;
 let hoverNet = null;
+let review = { reviewed: false, current: false };
 const undoStack = [];
+const redoStack = [];
 const HISTORY_MAX = 50;
 const DBLCLICK_MS = 700;
 const SNAP_PX = 9;          // pin-alignment catch radius, in screen pixels
+const PNG_TARGET_W = 1400;  // picture handed back: readable, but not huge
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -152,6 +161,26 @@ function pinSnap(dx, dy) {
   return { corrX, corrY, gx, gy };
 }
 
+/** Where a waypoint dropped at (x, y) should really go: onto the x or y line
+ *  of a nearby pin if there is one (so the wire runs straight into it),
+ *  otherwise onto the grid. Returns the point plus guide lines to show. */
+function snapWaypoint(x, y, upp) {
+  const tol = Math.max(SNAP_PX * upp, grid * 0.75);
+  let bx = null, by = null, dxBest = tol, dyBest = tol;
+  for (const c of scene.components) {
+    for (const p of c.pins) {
+      const ddx = Math.abs(p.x - x), ddy = Math.abs(p.y - y);
+      if (ddx <= dxBest) { dxBest = ddx; bx = p.x; }
+      if (ddy <= dyBest) { dyBest = ddy; by = p.y; }
+    }
+  }
+  return {
+    x: bx !== null ? bx : snap(x),
+    y: by !== null ? by : snap(y),
+    gx: bx, gy: by,
+  };
+}
+
 // ── view ───────────────────────────────────────────────────────────────────
 
 function applyView() {
@@ -217,7 +246,11 @@ function setNetFocus(name) {
   const members = new Set();
   const marks = [];
   for (const ref of wire.pins || []) {
-    const [cid, pinName] = String(ref).split('.');
+    // Split on the first dot only — pin names such as "3.3V" contain dots.
+    const s = String(ref);
+    const dot = s.indexOf('.');
+    const cid = dot < 0 ? s : s.slice(0, dot);
+    const pinName = dot < 0 ? '' : s.slice(dot + 1);
     members.add(cid);
     const comp = scene.components.find(c => c.id === cid);
     const pin = comp && comp.pins.find(p => p.name === pinName);
@@ -332,6 +365,19 @@ function render() {
   juncG.innerHTML = scene.junctions
     .map(([x, y]) => `<circle cx="${x}" cy="${y}" r="4" fill="#000"/>`).join('');
 
+  // No-connect crosses are part of the drawing (they end up in the export);
+  // the open-pin rings are an editor aid and stay out of it.
+  ncG.innerHTML = (scene.ncMarks || []).map(m =>
+    `<g class="nc"><title>${escapeHtml(m.ref)} — deliberately left open</title>` +
+    `<line x1="${m.x - 5}" y1="${m.y - 5}" x2="${m.x + 5}" y2="${m.y + 5}"/>` +
+    `<line x1="${m.x - 5}" y1="${m.y + 5}" x2="${m.x + 5}" y2="${m.y - 5}"/></g>`
+  ).join('');
+
+  openPinsG.innerHTML = chkOpen.checked ? (scene.openPins || []).map(m =>
+    `<circle class="openpin" cx="${m.x}" cy="${m.y}" r="6">` +
+    `<title>${escapeHtml(m.ref)} — not connected to anything</title></circle>`
+  ).join('') : '';
+
   labelsG.innerHTML = scene.netLabels.map(l =>
     `<rect x="${l.bg.x}" y="${l.bg.y}" width="${l.bg.w}" height="${l.bg.h}" ` +
     `fill="#fff" fill-opacity="0.92"/>` +
@@ -360,6 +406,16 @@ function render() {
     errorsBox.hidden = true;
   }
 
+  const erc = scene.erc || [];
+  if (erc.length) {
+    warningsBox.hidden = false;
+    warningsBox.textContent =
+      `${erc.length} warning(s) — the wiring is the assistant's job, so tell it:\n` +
+      erc.map(w => '· ' + w.message).join('\n');
+  } else {
+    warningsBox.hidden = true;
+  }
+
   setStatus(defaultStatus());
 
   renderNotes();
@@ -371,10 +427,13 @@ function render() {
 function applyPayload(payload) {
   scene = payload.scene;
   lastVersion = payload.version;
+  lastProject = payload.project;
   grid = scene.grid || 20;
   gridSelect.value = String(grid);
   chkGrid.checked = payload.showGrid !== false;
   gridRectEl.style.display = chkGrid.checked ? '' : 'none';
+  review = payload.review || { reviewed: false, current: false };
+  updateHandBack();
   document.title = `${scene.title} — CircuitStudio`;
 
   const names = payload.projects.length ? payload.projects : [payload.project];
@@ -448,15 +507,61 @@ function pushHistory() {
   if (!s) return;
   undoStack.push(s);
   if (undoStack.length > HISTORY_MAX) undoStack.shift();
+  redoStack.length = 0;   // a new change starts a new branch of history
 }
 
-async function undo() {
-  const s = undoStack.pop();
-  if (!s) { setStatus('Nothing left to undo.'); return; }
+/** Step through history: restore one stack's top, park the present on the other. */
+async function travel(from, to, verb) {
+  const s = from.pop();
+  if (!s) { setStatus(`Nothing to ${verb}.`); return; }
+  const now = snapshot();
   try {
     applyPayload(await api('/api/restore', s));
-    setStatus(`Undone — ${undoStack.length} step(s) left in history.`);
-  } catch (err) { setStatus('Error: ' + err.message); }
+    if (now) to.push(now);
+    setStatus(`${verb === 'undo' ? 'Undone' : 'Redone'} — ` +
+              `${undoStack.length} undo / ${redoStack.length} redo step(s) left.`);
+  } catch (err) {
+    from.push(s);
+    setStatus('Error: ' + err.message);
+  }
+}
+
+const undo = () => travel(undoStack, redoStack, 'undo');
+const redo = () => travel(redoStack, undoStack, 'redo');
+
+/** Rotate or mirror the selection as one rigid group.
+ *  A single part turns in place; several parts also swing around their
+ *  common centre, so wiring that was lined up stays lined up. The centre is
+ *  snapped to the grid, which keeps grid-placed parts on the grid. */
+async function transformSelection(kind) {
+  const comps = selectedComponents();
+  if (!comps.length) return;
+  let cx = 0, cy = 0;
+  if (comps.length > 1) {
+    const xs = comps.map(c => c.x), ys = comps.map(c => c.y);
+    cx = snap((Math.min(...xs) + Math.max(...xs)) / 2);
+    cy = snap((Math.min(...ys) + Math.max(...ys)) / 2);
+  }
+  const updates = {};
+  for (const c of comps) {
+    const dx = c.x - cx, dy = c.y - cy;
+    let x = c.x, y = c.y, rotation = c.rotation, flip = c.flip;
+    if (kind === 'cw') {             // SVG y points down: clockwise is (-dy, dx)
+      if (comps.length > 1) { x = cx - dy; y = cy + dx; }
+      rotation = (c.rotation + 90) % 360;
+    } else if (kind === 'ccw') {
+      if (comps.length > 1) { x = cx + dy; y = cy - dx; }
+      rotation = (c.rotation + 270) % 360;
+    } else {                         // mirror left-right on screen
+      if (comps.length > 1) x = cx - dx;
+      // Flip is applied before rotation, so a screen mirror of a rotated
+      // part is: toggle the flip and run the rotation the other way.
+      flip = !c.flip;
+      rotation = (360 - c.rotation) % 360;
+    }
+    updates[c.id] = { x, y, rotation, flip };
+  }
+  await applyPositions(updates);
 }
 
 canvas.addEventListener('pointerdown', evt => {
@@ -605,11 +710,11 @@ canvas.addEventListener('pointermove', evt => {
     const dy = (evt.clientY - wpDrag.sy) * wpDrag.upp;
     if (Math.abs(dx) > 1 || Math.abs(dy) > 1) wpDrag.moved = true;
     const o = wpDrag.points[wpDrag.index];
-    const nx = snap(o[0] + dx);
-    const ny = snap(o[1] + dy);
-    wpDrag.el.setAttribute('cx', nx);
-    wpDrag.el.setAttribute('cy', ny);
-    wpDrag.target = [nx, ny];
+    const s = snapWaypoint(o[0] + dx, o[1] + dy, wpDrag.upp);
+    showGuides(s.gx, s.gy);
+    wpDrag.el.setAttribute('cx', s.x);
+    wpDrag.el.setAttribute('cy', s.y);
+    wpDrag.target = [s.x, s.y];
   } else if (drag) {
     const dx = (evt.clientX - drag.sx) * drag.upp;
     const dy = (evt.clientY - drag.sy) * drag.upp;
@@ -668,6 +773,7 @@ canvas.addEventListener('pointerup', async evt => {
   if (wpDrag) {
     const d = wpDrag;
     wpDrag = null;
+    clearGuides();
     if (d.moved && d.target) {
       pushHistory();
       const points = d.points.map(p => [p[0], p[1]]);
@@ -688,8 +794,9 @@ canvas.addEventListener('pointerup', async evt => {
     if (edge) {
       pushHistory();
       const p = toUser(evt);
+      const s = snapWaypoint(p.x, p.y, viewMetrics().upp);
       const points = edge.waypoints.map(q => [q[0], q[1]]);
-      points.splice(c.leg, 0, [snap(p.x), snap(p.y)]);
+      points.splice(c.leg, 0, [s.x, s.y]);
       await postWaypoints(c.key, points);
     }
     return;
@@ -747,33 +854,21 @@ document.addEventListener('keydown', async evt => {
     evt.preventDefault();
     return;
   }
-  if ((evt.ctrlKey || evt.metaKey) && evt.key.toLowerCase() === 'z') {
-    evt.preventDefault();
-    await undo();
-    return;
+  const key = evt.key.toLowerCase();
+  if (evt.ctrlKey || evt.metaKey) {
+    if (key === 'z' && evt.shiftKey || key === 'y') {
+      evt.preventDefault();
+      await redo();
+    } else if (key === 'z') {
+      evt.preventDefault();
+      await undo();
+    }
+    return;   // leave Ctrl+R, Ctrl+F, … to the browser
   }
-  if (evt.key.toLowerCase() === 'r' && selected.size) {
-    const step = evt.shiftKey ? 270 : 90;
-    const updates = {};
-    for (const c of selectedComponents()) {
-      updates[c.id] = { x: c.x, y: c.y, rotation: (c.rotation + step) % 360,
-                        flip: c.flip };
-    }
-    if (!Object.keys(updates).length) return;
-    pushHistory();
-    try {
-      applyPayload(await api('/api/layout', { positions: updates }));
-    } catch (err) { setStatus('Error: ' + err.message); }
-  } else if (evt.key.toLowerCase() === 'm' && selected.size) {
-    const updates = {};
-    for (const c of selectedComponents()) {
-      updates[c.id] = { x: c.x, y: c.y, rotation: c.rotation, flip: !c.flip };
-    }
-    if (!Object.keys(updates).length) return;
-    pushHistory();
-    try {
-      applyPayload(await api('/api/layout', { positions: updates }));
-    } catch (err) { setStatus('Error: ' + err.message); }
+  if (key === 'r' && selected.size) {
+    await transformSelection(evt.shiftKey ? 'ccw' : 'cw');
+  } else if (key === 'm' && selected.size) {
+    await transformSelection('mirror');
   } else if (evt.key.toLowerCase() === 'l' && selected.size) {
     // Lock state is a property of the selection as a whole: if anything in it is
     // still unlocked, lock everything; otherwise unlock everything.
@@ -881,11 +976,18 @@ btnDistY.addEventListener('click', () => distribute('y'));
 document.getElementById('btnFit').addEventListener('click', fitView);
 
 document.getElementById('btnArrange').addEventListener('click', async () => {
-  if (!confirm('Discard all positions and lay out the schematic again?')) return;
+  if (!confirm('Discard all positions (locked parts stay) and lay out the schematic again?')) return;
   pushHistory();
   try {
     applyPayload(await api('/api/autoarrange', {}));
     fitView();
+  } catch (err) { setStatus('Error: ' + err.message); }
+});
+
+document.getElementById('btnReroute').addEventListener('click', async () => {
+  setStatus('Routing…');
+  try {
+    applyPayload(await api('/api/reroute', {}));
   } catch (err) { setStatus('Error: ' + err.message); }
 });
 
@@ -896,14 +998,95 @@ document.getElementById('btnExport').addEventListener('click', async () => {
   } catch (err) { setStatus('Error: ' + err.message); }
 });
 
+// ── handing the finished arrangement back to the assistant ─────────────────
+
+/** Rasterise the exported SVG in the browser.
+ *
+ *  Python cannot turn SVG into a bitmap without pulling in a rendering library,
+ *  and the whole app is deliberately dependency-free — but the browser is
+ *  already here and is the thing that defines what the drawing looks like, so
+ *  it does the job and the result is WYSIWYG by construction.
+ */
+function svgToPng(svgText) {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth || img.width;
+        const h = img.naturalHeight || img.height;
+        const scale = Math.min(2, Math.max(0.5, PNG_TARGET_W / Math.max(w, 1)));
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(w * scale));
+        cv.height = Math.max(1, Math.round(h * scale));
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, cv.width, cv.height);
+        ctx.drawImage(img, 0, 0, cv.width, cv.height);
+        resolve(cv.toDataURL('image/png'));
+      } catch (err) {
+        reject(err);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('the browser could not render the SVG'));
+    };
+    img.src = url;
+  });
+}
+
+function updateHandBack() {
+  if (!btnHandBack) return;
+  btnHandBack.classList.toggle('done', !!(review.reviewed && review.current));
+  btnHandBack.classList.toggle('stale', !!(review.reviewed && !review.current));
+  btnHandBack.title = !review.reviewed
+    ? 'Mark the arrangement as finished and render a picture the assistant can look at'
+    : review.current
+      ? `Handed back ${review.at} — the assistant can see this arrangement`
+      : `Handed back ${review.at}, but the layout has changed since. Click again.`;
+}
+
+btnHandBack.addEventListener('click', async () => {
+  btnHandBack.disabled = true;
+  setStatus('Rendering the picture…');
+  let png = null;
+  try {
+    const { svg } = await api('/api/svg', {});
+    png = await svgToPng(svg);
+  } catch (err) {
+    // Still worth recording the sign-off; the assistant then gets the numbers
+    // and the SVG path instead of a picture.
+    setStatus('Could not render a picture (' + err.message + ') — handing back the SVG only.');
+  }
+  try {
+    const payload = await api('/api/review', png ? { png } : {});
+    applyPayload(payload);
+    setStatus(`Handed back${png ? ' with a picture' : ''} — the assistant can review it now.`);
+  } catch (err) {
+    setStatus('Error: ' + err.message);
+  } finally {
+    btnHandBack.disabled = false;
+  }
+});
+
 projectSelect.addEventListener('change', async () => {
+  const previous = scene ? lastProject : null;
   try {
     applyPayload(await api('/api/open', { name: projectSelect.value }));
     fitView();
-  } catch (err) { setStatus('Error: ' + err.message); }
+  } catch (err) {
+    if (previous) projectSelect.value = previous;   // we did not switch
+    setStatus('Error: ' + err.message);
+  }
 });
 
 chkNotes.addEventListener('change', renderNotes);
+
+chkOpen.addEventListener('change', render);
 
 gridSelect.addEventListener('change', async () => {
   try {
@@ -924,7 +1107,10 @@ setInterval(async () => {
   if (drag || pan || wpDrag || wireClick || band || noteDrag) return;
   try {
     const v = await api('/api/version');
-    if (v.version !== lastVersion) await loadState(false);
+    // Another tab may have switched this editor to a different project; its
+    // version counter restarts, so the number alone can look unchanged.
+    if (v.project !== lastProject) await loadState(true);
+    else if (v.version !== lastVersion) await loadState(false);
   } catch (err) { /* server gone; keep the last drawing on screen */ }
 }, 1500);
 
