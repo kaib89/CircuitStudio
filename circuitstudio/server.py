@@ -6,6 +6,8 @@ apart.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import threading
 import webbrowser
@@ -23,7 +25,8 @@ STATIC = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
-MAX_BODY = 4 * 1024 * 1024
+MAX_BODY = 32 * 1024 * 1024   # a full-page PNG of a large schematic fits in this
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 class AppState:
@@ -43,6 +46,7 @@ class AppState:
             "scene": Scene(self.project).to_dict(),
             "view": self.project.layout.get("view"),
             "showGrid": bool(self.project.layout.get("showGrid", True)),
+            "review": self.project.review_state(),
         }
 
 
@@ -222,6 +226,39 @@ class Handler(BaseHTTPRequestHandler):
                 proj.svg_path.write_text(svg, encoding="utf-8")
                 out = str(proj.svg_path)
             self._json({"path": out})
+            return
+
+        if path == "/api/svg":
+            with self.state.lock:
+                svg = Scene(self.state.project).to_svg()
+            self._json({"svg": svg})
+            return
+
+        if path == "/api/review":
+            # The browser hands back a PNG it rasterised from our own SVG. Doing
+            # it there keeps the app dependency-free — Python has no way to turn
+            # SVG into a bitmap — and it is WYSIWYG by construction.
+            png = (body or {}).get("png") if isinstance(body, dict) else None
+            data = b""
+            if isinstance(png, str):
+                try:
+                    data = base64.b64decode(png.split(",", 1)[-1], validate=True)
+                except (binascii.Error, ValueError):
+                    self._error(400, "png is not valid base64")
+                    return
+                if not data.startswith(PNG_MAGIC):
+                    self._error(400, "png payload is not a PNG")
+                    return
+            with self.state.lock:
+                proj = self.state.project
+                proj.svg_path.write_text(Scene(proj).to_svg(), encoding="utf-8")
+                if data:
+                    proj.png_path.write_bytes(data)
+                info = proj.mark_reviewed()
+                proj.save_layout()
+                payload = self.state.scene_payload()
+            payload["reviewedAt"] = info["at"]
+            self._json(payload)
             return
 
         self._error(404, "not found")

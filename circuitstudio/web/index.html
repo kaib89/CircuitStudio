@@ -18,6 +18,7 @@
   <button id="btnFit" title="Fit the whole schematic into the view">Fit</button>
   <button id="btnArrange" title="Discard all positions and lay the schematic out again">Auto-arrange</button>
   <button id="btnExport" title="Write the SVG next to the project files">Export SVG</button>
+  <button id="btnHandBack" title="Mark the arrangement as finished and render a picture the assistant can look at">Hand back ✓</button>
 
   <span class="group" id="alignGroup">
     <span class="group-label">Align</span>
@@ -44,6 +45,10 @@
     <input type="checkbox" id="chkNotes" checked> Notes
   </label>
 
+  <label title="Ring the pins that are in no net and not declared as no-connect">
+    <input type="checkbox" id="chkOpen" checked> Open pins
+  </label>
+
   <span id="status"></span>
 </header>
 
@@ -61,6 +66,8 @@
     <g id="netLabels"></g>
     <g id="waypoints"></g>
     <g id="components"></g>
+    <g id="noConnect"></g>
+    <g id="openPins"></g>
     <g id="notes"></g>
     <g id="netPins"></g>
     <g id="guides"></g>
@@ -68,6 +75,7 @@
   </svg>
 
   <div id="errors" hidden></div>
+  <div id="warnings" hidden></div>
 
   <div id="hint">
     Drag = move &nbsp;·&nbsp; <b>drag a frame</b> = select &nbsp;·&nbsp;

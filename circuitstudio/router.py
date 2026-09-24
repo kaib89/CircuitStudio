@@ -77,6 +77,98 @@ def build_obstacle_grid(
     return obstacles
 
 
+def build_label_grid(
+    components: list["Component"],
+    grid: int = ROUTE_GRID,
+) -> set[tuple[int, int]]:
+    """Cells covered by component labels — *soft* obstacles.
+
+    Values and reference designators sit outside the body box, so without this
+    the router draws wires straight through the text. Blocking those cells
+    outright would be wrong though: a label often sits right where a wire has to
+    approach its pin, so this only makes crossing expensive.
+    """
+    cells: set[tuple[int, int]] = set()
+    for c in components:
+        for bx0, by0, bx1, by1 in c.label_boxes():
+            for gx in range(int(math.floor(bx0 / grid)), int(math.ceil(bx1 / grid)) + 1):
+                for gy in range(int(math.floor(by0 / grid)), int(math.ceil(by1 / grid)) + 1):
+                    cells.add((gx, gy))
+    return cells
+
+
+SOFT_LABEL_COST = 8   # per cell, on top of the base step cost
+SOFT_OVERLAP_COST = 6  # cells already carrying another net
+TURN_COST = 10         # prefer long straight runs over staircases
+SEARCH_MARGIN = 40     # cells of slack around a connection before A* gives up
+SEARCH_MARGINS = (10, 40, 160)  # tried in order; most detours need the first
+# Weighted A*: the turn penalty dwarfs the per-step cost, so a plain Manhattan
+# heuristic barely guides the search and long wires expand tens of thousands of
+# nodes. Over-estimating by 40% costs a slightly wonkier detour now and then and
+# buys back most of that time.
+HEURISTIC_WEIGHT = 1.4
+
+
+def _walled_in(cell: tuple[int, int], obstacles: set[tuple[int, int]]) -> bool:
+    """True if no wire can leave this cell at all.
+
+    Worth the four lookups: a pin buried inside another symbol makes A* search
+    its entire allowance before admitting defeat, and that happens on every
+    single redraw.
+    """
+    gx, gy = cell
+    return all((gx + dx, gy + dy) in obstacles
+               for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)))
+
+
+def _fast_route(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    obstacles: set[tuple[int, int]],
+    labels: set[tuple[int, int]],
+    existing: list[Segment],
+    grid: int,
+) -> list[Segment] | None:
+    """Straight or single-corner route, if one is free.
+
+    This is the overwhelmingly common case and costs a few set lookups instead
+    of a full A* expansion, which is what makes larger schematics usable.
+    Returns None when every candidate hits a component body.
+    """
+    ax, ay = a
+    bx, by = b
+    if (ax, ay) == (bx, by):
+        return []
+    if ax == bx or ay == by:
+        candidates = [[(a, b)]]
+    else:
+        candidates = [
+            [(a, (bx, ay)), ((bx, ay), b)],
+            [(a, (ax, by)), ((ax, by), b)],
+        ]
+
+    start_cell = (int(round(ax / grid)), int(round(ay / grid)))
+    end_cell = (int(round(bx / grid)), int(round(by / grid)))
+
+    best: list[Segment] | None = None
+    best_cost = float("inf")
+    for segs in candidates:
+        cells: set[tuple[int, int]] = set()
+        for s in segs:
+            cells |= _segment_cells(s, grid)
+        cells.discard(start_cell)
+        cells.discard(end_cell)
+        if cells & obstacles:
+            continue
+        if cells & labels:
+            # A wire across a label is worth a proper search for a way around.
+            continue
+        cost = _total_overlap(segs, existing)
+        if cost < best_cost:
+            best_cost, best = cost, segs
+    return best
+
+
 def _astar_edge(
     start: tuple[float, float],
     end: tuple[float, float],
@@ -84,21 +176,43 @@ def _astar_edge(
     overlap_cells: set[tuple[int, int]],
     grid: int = ROUTE_GRID,
     max_iter: int = 300000,
+    label_cells: set[tuple[int, int]] | None = None,
+    margin: int | None = SEARCH_MARGIN,
 ) -> list[Segment] | None:
-    """A* orthogonal pathfinding from start to end. Returns segment list or None."""
+    """A* orthogonal pathfinding from start to end. Returns segment list or None.
+
+    `margin` limits the search to a box around the two endpoints. Without it a
+    hopeless connection makes A* flood the entire plane; with it the search dies
+    quickly and the caller can retry unbounded.
+    """
     sx, sy = start
     ex, ey = end
     sgx = int(round(sx / grid))
     sgy = int(round(sy / grid))
     egx = int(round(ex / grid))
     egy = int(round(ey / grid))
+    labels = label_cells or frozenset()
 
     if sgx == egx and sgy == egy:
         return [(start, end)] if start != end else []
 
-    # Heuristic: Manhattan distance with small turn-aware bias
-    def H(gx: int, gy: int) -> int:
-        return abs(gx - egx) + abs(gy - egy)
+    if _walled_in((sgx, sgy), obstacles) or _walled_in((egx, egy), obstacles):
+        return None
+
+    if margin is None:
+        lo_x = lo_y = -(1 << 30)
+        hi_x = hi_y = 1 << 30
+    else:
+        lo_x, hi_x = min(sgx, egx) - margin, max(sgx, egx) + margin
+        lo_y, hi_y = min(sgy, egy) - margin, max(sgy, egy) + margin
+
+    # Manhattan distance, plus the corner that is unavoidable when the target is
+    # off-axis. Still admissible, but a much tighter bound than distance alone —
+    # without it the turn penalty dominates the cost and A* degenerates towards
+    # Dijkstra.
+    def H(gx: int, gy: int) -> float:
+        dx, dy = abs(gx - egx), abs(gy - egy)
+        return (dx + dy + (TURN_COST if dx and dy else 0)) * HEURISTIC_WEIGHT
 
     NONE_D, H_D, V_D = 0, 1, 2
     start_state = (sgx, sgy, NONE_D)
@@ -126,6 +240,8 @@ def _astar_edge(
 
         for ndx, ndy, nd in ((-1, 0, H_D), (1, 0, H_D), (0, -1, V_D), (0, 1, V_D)):
             ngx, ngy = gx + ndx, gy + ndy
+            if not (lo_x <= ngx <= hi_x and lo_y <= ngy <= hi_y):
+                continue
             new_state = (ngx, ngy, nd)
             if new_state in closed:
                 continue
@@ -136,9 +252,11 @@ def _astar_edge(
                 continue
             cost = 1
             if last_d != NONE_D and last_d != nd:
-                cost += 10  # turn penalty — prefer straight runs
+                cost += TURN_COST  # turn penalty — prefer straight runs
             if cell in overlap_cells:
-                cost += 6   # other nets here — avoid if possible
+                cost += SOFT_OVERLAP_COST   # other nets here — avoid if possible
+            if cell in labels:
+                cost += SOFT_LABEL_COST     # don't cut through a value or ref
             new_g = gv + cost
             if new_state not in g_scores or new_g < g_scores[new_state]:
                 g_scores[new_state] = new_g
@@ -217,6 +335,7 @@ def route_net_edges(
     existing_segments: list[Segment] | None = None,
     obstacles: set[tuple[int, int]] | None = None,
     grid: int = ROUTE_GRID,
+    label_cells: set[tuple[int, int]] | None = None,
 ) -> list[dict]:
     """Connect the pins of one net with orthogonal wires.
 
@@ -224,7 +343,7 @@ def route_net_edges(
         {"key": "R1.2|U1.DIS", "waypoints": [...], "legs": [[seg, ...], ...]}
 
     A tree edge is split into legs by its user waypoints, so the wire is forced
-    through the points the human dragged it to. Each leg is A*-routed on its own
+    through the points the human dragged it to. Each leg is routed on its own
     and therefore still avoids component bodies.
     """
     if len(pin_positions) < 2:
@@ -232,6 +351,7 @@ def route_net_edges(
 
     existing = list(existing_segments) if existing_segments else []
     waypoints = waypoints or {}
+    labels = label_cells or set()
 
     pts = list(pin_positions)
     n = len(pts)
@@ -270,7 +390,21 @@ def route_net_edges(
         for a, b in zip(chain, chain[1:]):
             leg: list[Segment] | None = None
             if obstacles is not None:
-                leg = _astar_edge(a, b, obstacles, overlap_cells, grid)
+                # Cheap direct route first; A* only when the simple ones are
+                # blocked or would cut through a label. The search box is then
+                # widened in steps: almost every detour is a small hop around
+                # one symbol, and letting A* roam the whole sheet to find that
+                # is what made large schematics slow.
+                leg = _fast_route(a, b, obstacles, labels, existing, grid)
+                for margin in SEARCH_MARGINS:
+                    if leg is not None:
+                        break
+                    leg = _astar_edge(a, b, obstacles, overlap_cells, grid,
+                                      label_cells=labels, margin=margin)
+                if leg is None:
+                    # No clean path exists — take the simple route and let it
+                    # cross a label rather than dropping the connection.
+                    leg = _fast_route(a, b, obstacles, frozenset(), existing, grid)
             if leg is None:
                 leg = _l_route_edge(a, b, existing)
             legs.append(leg)

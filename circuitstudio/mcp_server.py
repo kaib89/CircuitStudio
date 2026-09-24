@@ -10,6 +10,7 @@ so all diagnostics go to stderr.
 """
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .document import Project, is_safe_name, list_projects
+from .erc import check as erc_check, format_report
 from .registry import CONFIGURABLE_TYPES, KNOWN_TYPES, build_component
 from .scene import Scene
 
@@ -37,9 +39,9 @@ CIRCUIT_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "z.B. R1, U1, GND1"},
+                    "id": {"type": "string", "description": "e.g. R1, U1, GND1"},
                     "type": {"type": "string", "enum": KNOWN_TYPES},
-                    "value": {"type": "string", "description": "z.B. 10kΩ, 100nF"},
+                    "value": {"type": "string", "description": "e.g. 10kΩ, 100nF"},
                     "pins": {
                         "type": "object",
                         "description": "Only for 'ic' and board types: "
@@ -76,7 +78,7 @@ CIRCUIT_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "z.B. N1"},
+                    "id": {"type": "string", "description": "e.g. N1"},
                     "text": {"type": "string"},
                     "anchor": {
                         "type": "string",
@@ -88,6 +90,17 @@ CIRCUIT_SCHEMA = {
                 },
                 "required": ["id", "text"],
             },
+        },
+        "nc": {
+            "type": "array",
+            "description": (
+                "Pins that are meant to stay unconnected, e.g. [\"U1.EN\", "
+                "\"J1.2\"]. They get the standard no-connect cross in the "
+                "drawing and stop being reported as a warning — use this to say "
+                "'yes, I left this open on purpose'. For the reason behind it, "
+                "add a note anchored to the same pin."
+            ),
+            "items": {"type": "string"},
         },
     },
     "required": ["components", "nets"],
@@ -142,6 +155,21 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Start the CircuitStudio editor and open it in the browser so the "
             "human can arrange the parts."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"project": {"type": "string"}},
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "review_project",
+        "description": (
+            "Look at the result. Returns the rule-check warnings and, once the "
+            "human has pressed 'Hand back' in the editor, a picture of the "
+            "arrangement they actually made. Call this after the human says "
+            "they are done — reviewing the automatic arrangement instead is "
+            "pointless, it is only a starting point for them to drag around."
         ),
         "inputSchema": {
             "type": "object",
@@ -234,6 +262,23 @@ def _validate(circuit: dict[str, Any]) -> list[str]:
                 errors.append(
                     f"Note '{nid}': '{cid}' has no pin '{pin}'. "
                     f"Available: {available}")
+
+    for ref in circuit.get("nc", []) or []:
+        ref = str(ref)
+        if "." not in ref:
+            errors.append(f"'nc': '{ref}' is not an 'ID.Pin' reference")
+            continue
+        cid, pin = ref.split(".", 1)
+        comp = comps.get(cid)
+        if comp is None:
+            errors.append(f"'nc': part '{cid}' does not exist")
+            continue
+        try:
+            comp.pin(pin)
+        except KeyError:
+            available = ", ".join(p.name for p in comp.pins)
+            errors.append(
+                f"'nc': '{cid}' has no pin '{pin}'. Available: {available}")
     return errors
 
 
@@ -311,8 +356,15 @@ def tool_write_circuit(args: dict[str, Any]) -> str:
                    f"{', '.join(sorted(new_ids))}")
     else:
         msg.append("All parts already have a position from the layout.")
-    msg.append("The human now arranges the parts in the editor "
-               "(open_editor) and exports the SVG.")
+
+    warnings = erc_check(circuit, scene.components)
+    if warnings:
+        msg.append("")
+        msg.append(format_report(warnings))
+    msg.append("")
+    msg.append("The human now arranges the parts in the editor (open_editor). "
+               "When they say they are done, call review_project to see what "
+               "they made of it.")
     return "\n".join(msg)
 
 
@@ -328,12 +380,73 @@ def tool_open_editor(args: dict[str, Any]) -> str:
             f"The console window stays open; closing it stops the editor.")
 
 
+MAX_IMAGE_BYTES = 4 * 1024 * 1024
+
+
+def tool_review_project(args: dict[str, Any]) -> list[dict[str, Any]]:
+    """Rule check plus, if it exists, the picture the human handed back."""
+    name = _require_name(args)
+    project = Project(PROJECTS_DIR, name)
+    if not project.circuit_path.exists():
+        return [_text(f"Project '{name}' does not exist yet.")]
+    project.load()
+    scene = Scene(project)
+    state = project.review_state()
+
+    lines = [f"Project '{name}': {len(scene.components)} parts, "
+             f"{len(scene.nets)} nets."]
+    if scene.errors:
+        lines.append("")
+        lines.append("Problems while drawing:")
+        lines += [f"- {e}" for e in scene.errors]
+    lines.append("")
+    lines.append(format_report(erc_check(project.circuit, scene.components)))
+    lines.append("")
+
+    if not state["reviewed"]:
+        lines.append(
+            "The human has not handed this arrangement back yet, so there is no "
+            "picture. What the auto-placement produced is not worth looking at — "
+            "it only exists so they have something to drag around. Ask them to "
+            "press 'Hand back' in the editor when the layout is ready.")
+        return [_text("\n".join(lines))]
+
+    if state["current"]:
+        lines.append(f"Handed back {state['at']} — the picture below is the "
+                     f"arrangement as it stands.")
+    else:
+        lines.append(f"Handed back {state['at']}, but the layout has been "
+                     f"changed since. The picture below is the older state; ask "
+                     f"the human to hand it back again if that matters.")
+
+    out: list[dict[str, Any]] = [_text("\n".join(lines))]
+    png = project.png_path
+    if png.exists():
+        data = png.read_bytes()
+        if len(data) <= MAX_IMAGE_BYTES:
+            out.append({"type": "image",
+                        "data": base64.b64encode(data).decode("ascii"),
+                        "mimeType": "image/png"})
+        else:
+            out.append(_text(f"(The picture is {len(data) // 1024} KB, too "
+                             f"large to inline. It is at {png}.)"))
+    else:
+        out.append(_text(f"(No picture file — the browser could not rasterise "
+                         f"the drawing. The SVG is at {project.svg_path}.)"))
+    return out
+
+
+def _text(text: str) -> dict[str, Any]:
+    return {"type": "text", "text": text}
+
+
 HANDLERS = {
     "list_projects": tool_list_projects,
     "list_component_types": tool_list_component_types,
     "get_circuit": tool_get_circuit,
     "write_circuit": tool_write_circuit,
     "open_editor": tool_open_editor,
+    "review_project": tool_review_project,
 }
 
 
@@ -384,8 +497,12 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
                 "isError": True,
             })
         try:
-            text = handler(args)
-            return _result(msg_id, {"content": [{"type": "text", "text": text}]})
+            result = handler(args)
+            # Handlers return either plain text or ready-made content blocks
+            # (review_project adds an image).
+            content = (result if isinstance(result, list)
+                       else [{"type": "text", "text": result}])
+            return _result(msg_id, {"content": content})
         except Exception as exc:  # report back instead of killing the transport
             return _result(msg_id, {
                 "content": [{"type": "text", "text": f"Error: {exc}"}],

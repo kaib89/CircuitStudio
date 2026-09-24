@@ -1,38 +1,123 @@
 {
-  "title": "ESP32 with status LED and button",
   "components": [
-    { "id": "U1", "type": "esp32", "value": "ESP32 DevKit",
-      "pins": { "left": ["3V3", "EN"], "right": ["GPIO2", "GPIO4"], "bottom": ["GND"] } },
-    { "id": "R1", "type": "resistor", "value": "220Ω" },
-    { "id": "D1", "type": "led", "value": "red" },
-    { "id": "SW1", "type": "switch", "value": "button" },
-    { "id": "R2", "type": "resistor", "value": "10kΩ" },
-    { "id": "VCC1", "type": "vcc", "value": "3V3" },
-    { "id": "GND1", "type": "ground" },
-    { "id": "GND2", "type": "ground" }
+    {
+      "id": "U1",
+      "pins": {
+        "bottom": [
+          "GND"
+        ],
+        "left": [
+          "3V3",
+          "EN"
+        ],
+        "right": [
+          "GPIO2",
+          "GPIO4"
+        ]
+      },
+      "type": "esp32",
+      "value": "ESP32 DevKit"
+    },
+    {
+      "id": "R1",
+      "type": "resistor",
+      "value": "220Ω"
+    },
+    {
+      "id": "D1",
+      "type": "led",
+      "value": "red"
+    },
+    {
+      "id": "SW1",
+      "type": "switch",
+      "value": "button"
+    },
+    {
+      "id": "R2",
+      "type": "resistor",
+      "value": "10kΩ"
+    },
+    {
+      "id": "VCC1",
+      "type": "vcc",
+      "value": "3V3"
+    },
+    {
+      "id": "GND1",
+      "type": "ground"
+    },
+    {
+      "id": "GND2",
+      "type": "ground"
+    }
+  ],
+  "nc": [
+    "U1.EN"
   ],
   "nets": [
-    { "name": "3V3", "pins": ["VCC1.pin", "U1.3V3", "R2.1"] },
-    { "name": "led_drive", "pins": ["U1.GPIO2", "R1.1"] },
-    { "name": "led_anode", "pins": ["R1.2", "D1.anode"] },
-    { "name": "button", "pins": ["U1.GPIO4", "R2.2", "SW1.1"] },
-    { "name": "GND", "pins": ["U1.GND", "D1.cathode", "SW1.2", "GND1.pin", "GND2.pin"] }
+    {
+      "name": "3V3",
+      "pins": [
+        "VCC1.pin",
+        "U1.3V3",
+        "R2.1"
+      ]
+    },
+    {
+      "name": "led_drive",
+      "pins": [
+        "U1.GPIO2",
+        "R1.1"
+      ]
+    },
+    {
+      "name": "led_anode",
+      "pins": [
+        "R1.2",
+        "D1.anode"
+      ]
+    },
+    {
+      "name": "button",
+      "pins": [
+        "U1.GPIO4",
+        "R2.2",
+        "SW1.1"
+      ]
+    },
+    {
+      "name": "GND",
+      "pins": [
+        "U1.GND",
+        "D1.cathode",
+        "SW1.2",
+        "GND1.pin",
+        "GND2.pin"
+      ]
+    }
   ],
   "notes": [
     {
+      "anchor": "U1.GPIO4",
       "id": "N1",
-      "text": "R2 pulls the input high, so the button reads LOW when pressed. Configure GPIO4 as a plain input.",
-      "anchor": "U1.GPIO4"
+      "text": "R2 pulls the input high, so the button reads LOW when pressed. Configure GPIO4 as a plain input."
     },
     {
+      "anchor": "R1",
       "id": "N2",
-      "text": "220Ω gives about 6 mA at 3.3 V — plenty for a modern red LED.",
-      "anchor": "R1"
+      "text": "220Ω gives about 6 mA at 3.3 V — plenty for a modern red LED."
     },
     {
+      "anchor": "",
       "id": "N3",
-      "text": "Notes like this one are written by the assistant and live in the circuit file. You decide where they sit, how wide they are and whether they are shown.",
-      "anchor": ""
+      "text": "Notes like this one are written by the assistant and live in the circuit file. You decide where they sit, how wide they are and whether they are shown."
+    },
+    {
+      "anchor": "U1.EN",
+      "id": "N4",
+      "text": "EN has an internal pull-up and is left open on purpose — the cross says so. Listing a pin in \"nc\" stops it being reported as a missing connection."
     }
-  ]
+  ],
+  "title": "ESP32 with status LED and button"
 }

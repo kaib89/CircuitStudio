@@ -12,13 +12,17 @@ const labelsG = document.getElementById('netLabels');
 const wpG = document.getElementById('waypoints');
 const compsG = document.getElementById('components');
 const notesG = document.getElementById('notes');
+const ncG = document.getElementById('noConnect');
+const openPinsG = document.getElementById('openPins');
 const chkNotes = document.getElementById('chkNotes');
+const chkOpen = document.getElementById('chkOpen');
 const netPinsG = document.getElementById('netPins');
 const guidesG = document.getElementById('guides');
 const bandEl = document.getElementById('band');
 const gridRectEl = document.getElementById('gridRect');
 const chkGrid = document.getElementById('chkGrid');
 const errorsBox = document.getElementById('errors');
+const warningsBox = document.getElementById('warnings');
 const statusEl = document.getElementById('status');
 const projectSelect = document.getElementById('projectSelect');
 const gridSelect = document.getElementById('gridSelect');
@@ -26,6 +30,7 @@ const btnAlignX = document.getElementById('btnAlignX');
 const btnAlignY = document.getElementById('btnAlignY');
 const btnDistX = document.getElementById('btnDistX');
 const btnDistY = document.getElementById('btnDistY');
+const btnHandBack = document.getElementById('btnHandBack');
 
 let scene = null;
 let view = { x: 0, y: 0, w: 1000, h: 700 };
@@ -42,10 +47,12 @@ let spaceDown = false;
 let viewSaveTimer = null;
 let lastWpClick = null;
 let hoverNet = null;
+let review = { reviewed: false, current: false };
 const undoStack = [];
 const HISTORY_MAX = 50;
 const DBLCLICK_MS = 700;
 const SNAP_PX = 9;          // pin-alignment catch radius, in screen pixels
+const PNG_TARGET_W = 1400;  // picture handed back: readable, but not huge
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -332,6 +339,19 @@ function render() {
   juncG.innerHTML = scene.junctions
     .map(([x, y]) => `<circle cx="${x}" cy="${y}" r="4" fill="#000"/>`).join('');
 
+  // No-connect crosses are part of the drawing (they end up in the export);
+  // the open-pin rings are an editor aid and stay out of it.
+  ncG.innerHTML = (scene.ncMarks || []).map(m =>
+    `<g class="nc"><title>${escapeHtml(m.ref)} — deliberately left open</title>` +
+    `<line x1="${m.x - 5}" y1="${m.y - 5}" x2="${m.x + 5}" y2="${m.y + 5}"/>` +
+    `<line x1="${m.x - 5}" y1="${m.y + 5}" x2="${m.x + 5}" y2="${m.y - 5}"/></g>`
+  ).join('');
+
+  openPinsG.innerHTML = chkOpen.checked ? (scene.openPins || []).map(m =>
+    `<circle class="openpin" cx="${m.x}" cy="${m.y}" r="6">` +
+    `<title>${escapeHtml(m.ref)} — not connected to anything</title></circle>`
+  ).join('') : '';
+
   labelsG.innerHTML = scene.netLabels.map(l =>
     `<rect x="${l.bg.x}" y="${l.bg.y}" width="${l.bg.w}" height="${l.bg.h}" ` +
     `fill="#fff" fill-opacity="0.92"/>` +
@@ -360,6 +380,16 @@ function render() {
     errorsBox.hidden = true;
   }
 
+  const erc = scene.erc || [];
+  if (erc.length) {
+    warningsBox.hidden = false;
+    warningsBox.textContent =
+      `${erc.length} warning(s) — the wiring is the assistant's job, so tell it:\n` +
+      erc.map(w => '· ' + w.message).join('\n');
+  } else {
+    warningsBox.hidden = true;
+  }
+
   setStatus(defaultStatus());
 
   renderNotes();
@@ -375,6 +405,8 @@ function applyPayload(payload) {
   gridSelect.value = String(grid);
   chkGrid.checked = payload.showGrid !== false;
   gridRectEl.style.display = chkGrid.checked ? '' : 'none';
+  review = payload.review || { reviewed: false, current: false };
+  updateHandBack();
   document.title = `${scene.title} — CircuitStudio`;
 
   const names = payload.projects.length ? payload.projects : [payload.project];
@@ -896,6 +928,81 @@ document.getElementById('btnExport').addEventListener('click', async () => {
   } catch (err) { setStatus('Error: ' + err.message); }
 });
 
+// ── handing the finished arrangement back to the assistant ─────────────────
+
+/** Rasterise the exported SVG in the browser.
+ *
+ *  Python cannot turn SVG into a bitmap without pulling in a rendering library,
+ *  and the whole app is deliberately dependency-free — but the browser is
+ *  already here and is the thing that defines what the drawing looks like, so
+ *  it does the job and the result is WYSIWYG by construction.
+ */
+function svgToPng(svgText) {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth || img.width;
+        const h = img.naturalHeight || img.height;
+        const scale = Math.min(2, Math.max(0.5, PNG_TARGET_W / Math.max(w, 1)));
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(w * scale));
+        cv.height = Math.max(1, Math.round(h * scale));
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, cv.width, cv.height);
+        ctx.drawImage(img, 0, 0, cv.width, cv.height);
+        resolve(cv.toDataURL('image/png'));
+      } catch (err) {
+        reject(err);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('the browser could not render the SVG'));
+    };
+    img.src = url;
+  });
+}
+
+function updateHandBack() {
+  if (!btnHandBack) return;
+  btnHandBack.classList.toggle('done', !!(review.reviewed && review.current));
+  btnHandBack.classList.toggle('stale', !!(review.reviewed && !review.current));
+  btnHandBack.title = !review.reviewed
+    ? 'Mark the arrangement as finished and render a picture the assistant can look at'
+    : review.current
+      ? `Handed back ${review.at} — the assistant can see this arrangement`
+      : `Handed back ${review.at}, but the layout has changed since. Click again.`;
+}
+
+btnHandBack.addEventListener('click', async () => {
+  btnHandBack.disabled = true;
+  setStatus('Rendering the picture…');
+  let png = null;
+  try {
+    const { svg } = await api('/api/svg', {});
+    png = await svgToPng(svg);
+  } catch (err) {
+    // Still worth recording the sign-off; the assistant then gets the numbers
+    // and the SVG path instead of a picture.
+    setStatus('Could not render a picture (' + err.message + ') — handing back the SVG only.');
+  }
+  try {
+    const payload = await api('/api/review', png ? { png } : {});
+    applyPayload(payload);
+    setStatus(`Handed back${png ? ' with a picture' : ''} — the assistant can review it now.`);
+  } catch (err) {
+    setStatus('Error: ' + err.message);
+  } finally {
+    btnHandBack.disabled = false;
+  }
+});
+
 projectSelect.addEventListener('change', async () => {
   try {
     applyPayload(await api('/api/open', { name: projectSelect.value }));
@@ -904,6 +1011,8 @@ projectSelect.addEventListener('change', async () => {
 });
 
 chkNotes.addEventListener('change', renderNotes);
+
+chkOpen.addEventListener('change', render);
 
 gridSelect.addEventListener('change', async () => {
   try {
