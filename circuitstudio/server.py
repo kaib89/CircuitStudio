@@ -75,6 +75,7 @@ class AppState:
             "scene": scene.to_dict(),
             "view": self.project.layout.get("view"),
             "showGrid": bool(self.project.layout.get("showGrid", True)),
+            "showNetNames": bool(self.project.layout.get("showNetNames", True)),
             "review": self.project.review_state(),
         }
 
@@ -175,8 +176,25 @@ class Handler(BaseHTTPRequestHandler):
                     proj.layout["grid"] = body["grid"]
                 if isinstance(body.get("showGrid"), bool):
                     proj.layout["showGrid"] = body["showGrid"]
+                if isinstance(body.get("showNetNames"), bool):
+                    proj.layout["showNetNames"] = body["showNetNames"]
                 proj.save_layout()
                 payload = self.state.scene_payload()
+            self._json(payload)
+            return
+
+        if path == "/api/tie":
+            if not isinstance(body, dict) or not isinstance(body.get("part"), str):
+                self._error(400, "expected {part, symbol}")
+                return
+            symbol = body.get("symbol")
+            with self.state.lock:
+                proj = self.state.project
+                changed = proj.set_tie(body["part"],
+                                       symbol if isinstance(symbol, str) else None)
+                proj.save_layout()
+                payload = self.state.scene_payload()
+            payload["changed"] = changed
             self._json(payload)
             return
 
@@ -193,6 +211,11 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(wires, dict):
                     proj.layout["wires"] = {
                         k: v for k, v in wires.items() if isinstance(v, list)
+                    }
+                ties = body.get("ties")
+                if isinstance(ties, dict):
+                    proj.layout["ties"] = {
+                        str(k): str(v) for k, v in ties.items() if v
                     }
                 proj.save_layout()
                 payload = self.state.scene_payload()

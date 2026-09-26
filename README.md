@@ -165,6 +165,30 @@ out loud. For the reason behind it, anchor a note to the same pin.
 Nets named `VCC`, `VDD`, `3V3`, `5V`… are drawn red; `GND`, `VSS`… black and
 thicker.
 
+### Net ties: GND, VCC and labels
+
+`ground`, `vcc`, `vdd` and `label` are connections, not parts — the same
+convention as KiCad or Eagle. Put several of them into one net and they count
+as connected, but no wire is ever drawn between them. Instead every ordinary
+pin of the net is wired to the **nearest** such symbol, based on where the
+parts currently sit; drag a GND symbol next to other parts and they switch over
+to it. A net with just one symbol is wired to it as before.
+
+So instead of one long ground bus, give each part its own GND symbol, and use a
+pair of labels (value = net name) instead of a signal wire across the sheet. A
+net that has a label does not get its name printed along the wire as well — the
+label already says it.
+
+Symbols you have never moved (the orange ones) tidy themselves up: if one
+serves no pin, or only pins far away, it is parked right next to the pin that
+is furthest from its symbol. Symbols you placed by hand are never moved.
+
+To override the nearest-symbol rule, select the symbol and **Alt+click** the
+part that should use it; Alt+click with nothing selected hands the part back.
+The rule check warns about a symbol that ends up serving no pin, a label whose
+value is not its net's name, and a ground/supply symbol on a net whose name
+says otherwise.
+
 ICs, connectors and board symbols (`esp32`, `rpi`, `pico`, `arduino_uno`,
 `arduino_nano`) take their pins from the circuit file:
 
@@ -188,6 +212,8 @@ ICs, connectors and board symbols (`esp32`, `rpi`, `pico`, `arduino_uno`,
 | Redraw all wires | **Reroute** — forgets the stored wires and routes everything afresh |
 | Trace a net | hover a wire — the whole net stays lit and its pins are listed |
 | Spot loose ends | pins in no net get a dashed red ring (**Open pins**) |
+| Pick a GND/label | select the symbol, **Alt+click** a part to wire it there; Alt+click alone resets |
+| Hide net names | untick **Net names** — also leaves them out of the exported SVG |
 | Finish | **Hand back ✓** — renders a picture the assistant can review |
 | Export | **Export SVG**, written next to the project |
 

@@ -208,6 +208,130 @@ class RoutingTests(TmpProjects):
         self.assertEqual(scene.rerouted, sum(len(e) for e in scene.net_edges))
 
 
+class NetTieTests(TmpProjects):
+    """GND/VCC/label symbols are connections, not parts to be wired together."""
+
+    def _two_islands(self, extra_positions=None):
+        comps = [{"id": "R1", "type": "resistor"}, {"id": "R2", "type": "resistor"},
+                 {"id": "L1", "type": "label", "value": "CAL"},
+                 {"id": "L2", "type": "label", "value": "CAL"},
+                 {"id": "GND1", "type": "ground"}, {"id": "GND2", "type": "ground"}]
+        nets = [{"name": "CAL", "pins": ["R1.1", "L1.pin", "R2.1", "L2.pin"]},
+                {"name": "GND", "pins": ["R1.2", "R2.2", "GND1.pin", "GND2.pin"]}]
+        pos = {"R1": (0, 0), "R2": (600, 0), "L1": (-150, 0), "L2": (450, 0),
+               "GND1": (100, 80), "GND2": (700, 80)}
+        pos.update(extra_positions or {})
+        return self.project(comps, nets, {k: {"x": x, "y": y, "rotation": 0}
+                                          for k, (x, y) in pos.items()})
+
+    def test_symbols_are_never_wired_to_each_other(self) -> None:
+        scene = Scene(self._two_islands())
+        keys = {s.nets[i]["name"]: sorted(e["key"] for e in s.net_edges[i])
+                for s in [scene] for i in range(len(scene.nets))}
+        self.assertEqual(keys["CAL"], ["L1.pin|R1.1", "L2.pin|R2.1"])
+        self.assertEqual(keys["GND"], ["GND1.pin|R1.2", "GND2.pin|R2.2"])
+        # Nothing spans the gap between the two islands.
+        for segs in scene.wires:
+            for (x1, _), (x2, _) in segs:
+                self.assertFalse(min(x1, x2) < 250 and max(x1, x2) > 350)
+        self.assertEqual(scene.erc, [])
+
+    def test_assignment_follows_the_layout(self) -> None:
+        # GND2 dragged far away: both resistors now go to GND1, GND2 serves nobody.
+        scene = Scene(self._two_islands({"GND2": (1500, 500)}))
+        gnd = next(i for i, n in enumerate(scene.nets) if n["name"] == "GND")
+        self.assertFalse(any("GND2" in e["key"] for e in scene.net_edges[gnd]))
+        self.assertEqual(len(scene.net_edges[gnd]), 2)
+        self.assertEqual(scene.dangling_ties, ["GND2"])
+        self.assertTrue(any("GND2" in f["message"] for f in scene.erc))
+
+    def test_manual_assignment_overrides_nearest(self) -> None:
+        p = self._two_islands()
+        self.assertEqual(p.set_tie("R2", "GND1"), ["R2.2"])
+        scene = Scene(p)
+        gnd = next(i for i, n in enumerate(scene.nets) if n["name"] == "GND")
+        self.assertFalse(any("GND2" in e["key"] for e in scene.net_edges[gnd]))
+        self.assertEqual(scene.dangling_ties, ["GND2"])
+        self.assertEqual(p.set_tie("R2", None), ["R2.2"])
+        self.assertEqual(p.layout["ties"], {})
+
+    def test_single_symbol_net_is_unchanged(self) -> None:
+        comps = [{"id": "R1", "type": "resistor"}, {"id": "R2", "type": "resistor"},
+                 {"id": "GND1", "type": "ground"}]
+        nets = [{"name": "GND", "pins": ["R1.2", "R2.2", "GND1.pin"]}]
+        scene = Scene(self.project(comps, nets))
+        self.assertEqual(len(scene.net_edges[0]), 2)   # one tree over 3 pins
+
+    def test_label_suppresses_wire_net_name(self) -> None:
+        scene = Scene(self._two_islands())
+        self.assertNotIn("CAL", [lab["text"] for lab in scene.net_labels])
+
+    def test_net_names_can_be_hidden(self) -> None:
+        comps = [{"id": "R1", "type": "resistor"}, {"id": "R2", "type": "resistor"}]
+        nets = [{"name": "SIG", "pins": ["R1.2", "R2.1"]}]
+        pos = {"R1": {"x": 0, "y": 0}, "R2": {"x": 300, "y": 0}}
+        p = self.project(comps, nets, pos)
+        self.assertEqual([lab["text"] for lab in Scene(p).net_labels], ["SIG"])
+        p.layout["showNetNames"] = False
+        self.assertEqual(Scene(p).net_labels, [])
+        self.assertNotIn(">SIG<", Scene(p).to_svg())
+
+    def test_rule_check_flags_wrong_symbols(self) -> None:
+        comps = [{"id": "R1", "type": "resistor"},
+                 {"id": "L1", "type": "label", "value": "CLK"},
+                 {"id": "GND1", "type": "ground"},
+                 {"id": "V1", "type": "vcc", "value": "3V3"}]
+        nets = [{"name": "DATA", "pins": ["R1.1", "L1.pin", "GND1.pin"]},
+                {"name": "3V3", "pins": ["R1.2", "V1.pin"]}]
+        messages = " ".join(f["message"] for f in Scene(self.project(comps, nets)).erc)
+        self.assertIn("Label L1 reads 'CLK'", messages)
+        self.assertIn("Ground symbol GND1", messages)
+        self.assertNotIn("V1", messages)
+
+    def test_autoplace_spreads_symbols_over_the_parts(self) -> None:
+        comps = [{"id": "R1", "type": "resistor"}, {"id": "R2", "type": "resistor"},
+                 {"id": "GND1", "type": "ground"}, {"id": "GND2", "type": "ground"}]
+        nets = [{"name": "GND", "pins": ["R1.2", "R2.2", "GND1.pin", "GND2.pin"]}]
+        pos = {"R1": {"x": 0, "y": 0}, "R2": {"x": 900, "y": 0}}
+        p = self.project(comps, nets, pos)
+        xs = sorted(p.layout["positions"][g]["x"] for g in ("GND1", "GND2"))
+        self.assertLess(xs[0], 300)
+        self.assertGreater(xs[1], 600)
+
+
+class RehomeTests(TmpProjects):
+    def _cluttered(self, touched: bool):
+        comps = [{"id": f"C{i}", "type": "capacitor"} for i in range(1, 5)]
+        comps += [{"id": f"GND{i}", "type": "ground"} for i in range(1, 5)]
+        nets = [{"name": "GND", "pins": [f"C{i}.2" for i in range(1, 5)]
+                 + [f"GND{i}.pin" for i in range(1, 5)]}]
+        pos = {f"C{i}": {"x": 400 * (i - 1), "y": (i % 2) * 300} for i in range(1, 5)}
+        # All four symbols piled up next to C1, as an old auto-placement left them.
+        for i in range(1, 5):
+            pos[f"GND{i}"] = {"x": 60 + 40 * i, "y": 100, "auto": not touched}
+        return self.project(comps, nets, pos)
+
+    def test_idle_auto_symbols_move_to_the_pins(self) -> None:
+        p = self._cluttered(touched=False)
+        scene = Scene(p)
+        self.assertEqual(scene.dangling_ties, [])
+        gnd = scene.net_edges[0]
+        self.assertEqual(len(gnd), 4)
+        for e in gnd:   # every capacitor now has a short run to its own symbol
+            length = sum(abs(b[0] - a[0]) + abs(b[1] - a[1])
+                         for leg in e["legs"] for a, b in leg)
+            self.assertLess(length, 120, e["key"])
+        self.assertTrue(all(p.layout["positions"][f"GND{i}"]["auto"]
+                            for i in range(1, 5)))
+
+    def test_symbols_placed_by_hand_stay_put(self) -> None:
+        p = self._cluttered(touched=True)
+        before = {k: dict(v) for k, v in p.layout["positions"].items()}
+        self.assertEqual(p.rehome_ties(), [])
+        self.assertEqual(p.layout["positions"], before)
+        self.assertTrue(Scene(p).dangling_ties)
+
+
 class WaypointTests(TmpProjects):
     def test_off_grid_waypoint_is_kept(self) -> None:
         """The editor snaps waypoints to pin lines, which may be off the grid."""
