@@ -179,6 +179,10 @@ pair of labels (value = net name) instead of a signal wire across the sheet. A
 net that has a label does not get its name printed along the wire as well — the
 label already says it.
 
+Symbols you have never moved (the orange ones) tidy themselves up: if one
+serves no pin, or only pins far away, it is parked right next to the pin that
+is furthest from its symbol. Symbols you placed by hand are never moved.
+
 To override the nearest-symbol rule, select the symbol and **Alt+click** the
 part that should use it; Alt+click with nothing selected hands the part back.
 The rule check warns about a symbol that ends up serving no pin, a label whose

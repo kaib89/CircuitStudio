@@ -299,6 +299,39 @@ class NetTieTests(TmpProjects):
         self.assertGreater(xs[1], 600)
 
 
+class RehomeTests(TmpProjects):
+    def _cluttered(self, touched: bool):
+        comps = [{"id": f"C{i}", "type": "capacitor"} for i in range(1, 5)]
+        comps += [{"id": f"GND{i}", "type": "ground"} for i in range(1, 5)]
+        nets = [{"name": "GND", "pins": [f"C{i}.2" for i in range(1, 5)]
+                 + [f"GND{i}.pin" for i in range(1, 5)]}]
+        pos = {f"C{i}": {"x": 400 * (i - 1), "y": (i % 2) * 300} for i in range(1, 5)}
+        # All four symbols piled up next to C1, as an old auto-placement left them.
+        for i in range(1, 5):
+            pos[f"GND{i}"] = {"x": 60 + 40 * i, "y": 100, "auto": not touched}
+        return self.project(comps, nets, pos)
+
+    def test_idle_auto_symbols_move_to_the_pins(self) -> None:
+        p = self._cluttered(touched=False)
+        scene = Scene(p)
+        self.assertEqual(scene.dangling_ties, [])
+        gnd = scene.net_edges[0]
+        self.assertEqual(len(gnd), 4)
+        for e in gnd:   # every capacitor now has a short run to its own symbol
+            length = sum(abs(b[0] - a[0]) + abs(b[1] - a[1])
+                         for leg in e["legs"] for a, b in leg)
+            self.assertLess(length, 120, e["key"])
+        self.assertTrue(all(p.layout["positions"][f"GND{i}"]["auto"]
+                            for i in range(1, 5)))
+
+    def test_symbols_placed_by_hand_stay_put(self) -> None:
+        p = self._cluttered(touched=True)
+        before = {k: dict(v) for k, v in p.layout["positions"].items()}
+        self.assertEqual(p.rehome_ties(), [])
+        self.assertEqual(p.layout["positions"], before)
+        self.assertTrue(Scene(p).dangling_ties)
+
+
 class WaypointTests(TmpProjects):
     def test_off_grid_waypoint_is_kept(self) -> None:
         """The editor snaps waypoints to pin lines, which may be off the grid."""

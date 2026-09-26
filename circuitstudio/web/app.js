@@ -409,10 +409,19 @@ function render() {
 
   const erc = scene.erc || [];
   if (erc.length) {
+    const wiring = erc.filter(w => w.kind !== 'placement');
+    const placement = erc.filter(w => w.kind === 'placement');
+    const parts = [];
+    if (wiring.length) {
+      parts.push(`${wiring.length} wiring warning(s) — that is the assistant's ` +
+                 `job, so tell it:\n` + wiring.map(w => '· ' + w.message).join('\n'));
+    }
+    if (placement.length) {
+      parts.push(`${placement.length} placement warning(s) — yours to fix ` +
+                 `by dragging:\n` + placement.map(w => '· ' + w.message).join('\n'));
+    }
     warningsBox.hidden = false;
-    warningsBox.textContent =
-      `${erc.length} warning(s) — the wiring is the assistant's job, so tell it:\n` +
-      erc.map(w => '· ' + w.message).join('\n');
+    warningsBox.textContent = parts.join('\n\n');
   } else {
     warningsBox.hidden = true;
   }

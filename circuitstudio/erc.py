@@ -110,10 +110,12 @@ def check(circuit: dict[str, Any],
 def dangling_tie(comp_id: str) -> dict[str, str]:
     """A GND/VCC/label symbol that ended up with no pin to serve — it is
     the nearest symbol of its net for none of the net's pins."""
-    return _finding(
+    finding = _finding(
         f"{comp_id} is not the nearest symbol for any pin of its net, so it "
-        f"hangs in the air. Move it next to the pins it belongs to, or remove it.",
-        comp_id)
+        f"hangs in the air. Drag it next to the pins it should serve, or have "
+        f"it removed if it is one too many.", comp_id)
+    finding["kind"] = "placement"   # the human's to fix, not the assistant's
+    return finding
 
 
 def _tie_findings(circuit: dict[str, Any],

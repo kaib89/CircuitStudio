@@ -14,10 +14,7 @@ from .router import (
     ROUTE_GRID, Router, Segment, find_junctions,
 )
 from .symbols import Component, mirror_symbol, xml_escape
-
-# Symbols that *are* a connection rather than a part: two GND symbols in the
-# same net are connected by definition, so no wire is drawn between them.
-TIE_TYPES = frozenset({"ground", "vcc", "vdd", "label"})
+from . import ties
 
 PADDING = 80
 
@@ -200,30 +197,11 @@ class Scene:
 
     def _tie_groups(self, pts: list[tuple[float, float]],
                     keys: list[str]) -> list[tuple[list[tuple[float, float]], list[str]]]:
-        """Split a net into one wire tree per net-tie symbol.
-
-        With two or more GND/VCC/label symbols in a net, each ordinary pin is
-        wired only to the symbol nearest to it (or to the one the human picked
-        in layout["ties"]), and the symbols are never wired to each other —
-        the same convention as KiCad or Eagle. With fewer than two symbols the
-        whole net is one tree, exactly as before.
-        """
-        ties = [k for k, ref in enumerate(keys)
-                if self._type_of(ref) in TIE_TYPES]
-        if len(ties) < 2:
+        """Split a net into one wire tree per GND/VCC/label symbol (see ties.py)."""
+        groups = ties.assign(keys, pts, self._type_of,
+                             self.project.layout.get("ties"))
+        if groups is None:
             return [(pts, keys)]
-        tie_by_comp = {keys[k].split(".", 1)[0]: k for k in ties}
-        overrides = self.project.layout.get("ties") or {}
-        groups: dict[int, list[int]] = {t: [t] for t in ties}
-        for k, ref in enumerate(keys):
-            if k in groups:
-                continue
-            target = tie_by_comp.get(str(overrides.get(ref, "")))
-            if target is None:
-                px, py = pts[k]
-                target = min(ties, key=lambda t: abs(pts[t][0] - px)
-                             + abs(pts[t][1] - py))
-            groups[target].append(k)
         for t, members in groups.items():
             if len(members) == 1:
                 self.dangling_ties.append(keys[t].split(".", 1)[0])
