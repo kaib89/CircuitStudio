@@ -16,6 +16,7 @@ const ncG = document.getElementById('noConnect');
 const openPinsG = document.getElementById('openPins');
 const chkNotes = document.getElementById('chkNotes');
 const chkOpen = document.getElementById('chkOpen');
+const chkNetNames = document.getElementById('chkNetNames');
 const netPinsG = document.getElementById('netPins');
 const guidesG = document.getElementById('guides');
 const bandEl = document.getElementById('band');
@@ -431,6 +432,7 @@ function applyPayload(payload) {
   grid = scene.grid || 20;
   gridSelect.value = String(grid);
   chkGrid.checked = payload.showGrid !== false;
+  chkNetNames.checked = payload.showNetNames !== false;
   gridRectEl.style.display = chkGrid.checked ? '' : 'none';
   review = payload.review || { reviewed: false, current: false };
   updateHandBack();
@@ -498,7 +500,7 @@ function snapshot() {
       if (e.waypoints.length) wires[e.key] = e.waypoints.map(p => [p[0], p[1]]);
     }
   }
-  return { positions, wires };
+  return { positions, wires, ties: { ...(scene.ties || {}) } };
 }
 
 /** Remember the state *before* a change so Ctrl+Z can get back to it. */
@@ -637,6 +639,8 @@ canvas.addEventListener('pointerdown', evt => {
       leg: parseInt(wireEl.dataset.leg, 10),
       sx: evt.clientX, sy: evt.clientY,
     };
+  } else if (compEl && evt.altKey) {
+    assignTie(compEl.dataset.id);
   } else if (compEl) {
     const id = compEl.dataset.id;
     if (evt.shiftKey) {
@@ -915,6 +919,30 @@ document.addEventListener('keyup', evt => {
 
 // ── align / distribute ──────────────────────────────────────────────────
 
+const TIE_TYPES = new Set(['ground', 'vcc', 'vdd', 'label']);
+
+/** Alt+click on a part: wire its pins to the selected GND/VCC/label symbol
+ *  instead of the nearest one. Alt+click with no such symbol selected hands
+ *  the part back to the nearest-symbol rule. */
+async function assignTie(partId) {
+  const sel = scene.components.filter(c => selected.has(c.id));
+  const symbol = sel.length === 1 && TIE_TYPES.has(sel[0].type) ? sel[0].id : null;
+  if (symbol === partId) return;
+  pushHistory();
+  try {
+    const payload = await api('/api/tie', { part: partId, symbol });
+    applyPayload(payload);
+    const n = (payload.changed || []).length;
+    if (symbol) {
+      setStatus(n ? `${partId}: ${n} pin(s) now wired to ${symbol}.`
+                  : `${partId} shares no net with ${symbol}.`);
+    } else {
+      setStatus(n ? `${partId}: back to the nearest symbol.`
+                  : 'Select one GND/VCC/label symbol first, then Alt+click a part.');
+    }
+  } catch (err) { setStatus('Error: ' + err.message); }
+}
+
 function selectedComponents() {
   // Locked parts stay put; they can still be selected so they can be unlocked.
   return scene ? scene.components.filter(c => selected.has(c.id) && !c.locked) : [];
@@ -1091,6 +1119,12 @@ chkOpen.addEventListener('change', render);
 gridSelect.addEventListener('change', async () => {
   try {
     applyPayload(await api('/api/layout', { grid: parseInt(gridSelect.value, 10) }));
+  } catch (err) { setStatus('Error: ' + err.message); }
+});
+
+chkNetNames.addEventListener('change', async () => {
+  try {
+    applyPayload(await api('/api/layout', { showNetNames: chkNetNames.checked }));
   } catch (err) { setStatus('Error: ' + err.message); }
 });
 

@@ -32,9 +32,15 @@ _VCC_NAMES = {"vcc", "vdd", "v+", "5v", "3v3", "3.3v", "9v", "12v", "24v", "vin"
 _GND_NAMES = {"gnd", "vss", "v-", "0v", "agnd", "dgnd", "pgnd"}
 
 
+# "3.3V", "1V8", "+12V", "5V_USB" — a bare voltage is a rail.
+_VOLTAGE_NAME = re.compile(r"^\+?\d+([.,]\d+)?v\d*([_-].*)?$")
+
+
 def is_supply_net(name: str) -> bool:
     n = name.lower().strip()
-    return n in _VCC_NAMES or n.startswith(("vcc", "vdd", "v+", "+", "5v", "3v"))
+    return (n in _VCC_NAMES
+            or n.startswith(("vcc", "vdd", "v+", "+", "5v", "3v", "vbus", "vsys"))
+            or bool(_VOLTAGE_NAME.match(n)))
 
 
 def is_ground_net(name: str) -> bool:
@@ -177,6 +183,7 @@ class Project:
         self.layout.setdefault("wires", {})
         self.layout.setdefault("notes", {})
         self.layout.setdefault("routes", {})
+        self.layout.setdefault("ties", {})
         self.layout.setdefault("view", None)
 
         self.autoplace()
@@ -297,8 +304,12 @@ class Project:
                             return cand
             return (cell[0] + 2 * len(occupied) + 1, cell[1])
 
+        tie_home = self._tie_homes(specs)
         for cid in self._placement_order(unplaced, adj, positions):
             anchors = [positions[n] for n in adj.get(cid, ()) if n in positions]
+            home = tie_home(cid, positions)
+            if home is not None:
+                anchors = [home]
             if anchors:
                 ax = sum(a.get("x", 0) for a in anchors) / len(anchors)
                 ay = sum(a.get("y", 0) for a in anchors) / len(anchors)
@@ -317,6 +328,45 @@ class Project:
         return unplaced
 
     # ── Auto-placement helpers ───────────────────────────────────────────────
+
+    def _tie_homes(self, specs: dict[str, Any]):
+        """Where a GND/VCC/label symbol should go when its net has several.
+
+        Each such symbol only gets wired to the pins nearest to it, so piling
+        all of them onto the middle of the net would serve nobody. Instead
+        every symbol goes next to the part of its net that is furthest from
+        the symbols already placed — spreading them out over the parts.
+        """
+        tie_types = {"ground", "vcc", "vdd", "label"}
+        nets: dict[str, tuple[list[str], list[str]]] = {}
+        for net in self.circuit.get("nets", []):
+            ids = list(dict.fromkeys(str(p).split(".")[0]
+                                     for p in net.get("pins", [])))
+            ties = [c for c in ids
+                    if str(specs.get(c, {}).get("type", "")).lower() in tie_types]
+            if len(ties) < 2:
+                continue
+            parts = [c for c in ids if c not in ties and c in specs]
+            for t in ties:
+                nets[t] = (ties, parts)
+
+        def home(cid: str, positions: dict[str, Any]) -> dict[str, Any] | None:
+            if cid not in nets:
+                return None
+            ties, parts = nets[cid]
+            placed_parts = [positions[c] for c in parts if c in positions]
+            if not placed_parts:
+                return None
+            siblings = [positions[t] for t in ties if t != cid and t in positions]
+
+            def spare(p: dict[str, Any]) -> float:
+                if not siblings:
+                    return 0.0
+                return min(abs(p.get("x", 0) - s.get("x", 0))
+                           + abs(p.get("y", 0) - s.get("y", 0)) for s in siblings)
+            return max(placed_parts, key=spare)
+        return home
+
 
     @staticmethod
     def _to_cell(pos: dict[str, Any]) -> tuple[int, int]:
@@ -449,6 +499,33 @@ class Project:
         else:
             wires.pop(edge, None)
         self.version += 1
+
+    def set_tie(self, part: str, symbol: str | None) -> list[str]:
+        """Wire every pin of `part` that shares a net with the GND/VCC/label
+        `symbol` to that symbol, overriding the nearest-symbol rule.
+        symbol=None hands all of `part`'s pins back to that rule.
+
+        Returns the pin references that changed hands.
+        """
+        ties: dict[str, str] = self.layout.setdefault("ties", {})
+        prefix = f"{part}."
+        if symbol is None:
+            dropped = [ref for ref in ties if ref.startswith(prefix)]
+            for ref in dropped:
+                del ties[ref]
+            self.version += 1
+            return dropped
+        changed: list[str] = []
+        for net in self.circuit.get("nets", []):
+            pins = [str(p) for p in net.get("pins", [])]
+            if not any(p.split(".", 1)[0] == symbol for p in pins):
+                continue
+            for ref in pins:
+                if ref.startswith(prefix):
+                    ties[ref] = symbol
+                    changed.append(ref)
+        self.version += 1
+        return changed
 
     # ── Notes ────────────────────────────────────────────────────────────────
 

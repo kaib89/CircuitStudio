@@ -15,6 +15,10 @@ from .router import (
 )
 from .symbols import Component, mirror_symbol, xml_escape
 
+# Symbols that *are* a connection rather than a part: two GND symbols in the
+# same net are connected by definition, so no wire is drawn between them.
+TIE_TYPES = frozenset({"ground", "vcc", "vdd", "label"})
+
 PADDING = 80
 
 # Note boxes. Text is wrapped here rather than in the browser so the editor and
@@ -91,11 +95,13 @@ class Scene:
         self.net_edges: list[list[dict[str, Any]]] = [[] for _ in self.nets]
         self.net_pins: list[list[tuple[float, float]]] = [[] for _ in self.nets]
         self.junctions: set[tuple[float, float]] = set()
+        self.dangling_ties: list[str] = []  # net-tie symbols with no pin to serve
         self.rerouted = 0            # edges that needed a fresh A* search
         self._route()
         self.net_labels = self._build_net_labels()
         self.notes = self._build_notes()
-        self.erc = erc.check(project.circuit, self.components)
+        self.erc = erc.check(project.circuit, self.components) + [
+            erc.dangling_tie(cid) for cid in self.dangling_ties]
         self.nc_marks = self._build_pin_marks(erc.nc_pins(project.circuit))
         self.open_pins = self._build_pin_marks(
             erc.open_pins(project.circuit, self.components))
@@ -149,6 +155,7 @@ class Scene:
             [(c.comp_id, c.x, c.y, c.rotation, c.flip) for c in self.components],
             [(n["name"], n["pins"]) for n in self.nets],
             self.project.layout.get("wires") or {},
+            self.project.layout.get("ties") or {},
             sorted(positions),
         ], sort_keys=True, default=str)
 
@@ -159,7 +166,7 @@ class Scene:
         cached = getattr(self.project, "_route_cache", None)
         if cached and cached[0] == key:
             (self.wires, self.net_edges, self.net_pins,
-             self.junctions, pin_errors) = cached[1]
+             self.junctions, pin_errors, self.dangling_ties) = cached[1]
             self.errors.extend(pin_errors)
             return
 
@@ -174,7 +181,10 @@ class Scene:
         for i in order:
             pts, keys = self._pin_positions(self.nets[i])
             self.net_pins[i] = pts
-            edges = router.route_net(pts, keys, waypoints=waypoints, stored=stored)
+            edges = []
+            for g_pts, g_keys in self._tie_groups(pts, keys):
+                edges += router.route_net(g_pts, g_keys, waypoints=waypoints,
+                                          stored=stored)
             self.net_edges[i] = edges
             self.wires[i] = [s for e in edges for leg in e["legs"] for s in leg]
         self.junctions = find_junctions(self.wires, self.net_pins)
@@ -186,7 +196,57 @@ class Scene:
             self.project.routes_dirty = True  # type: ignore[attr-defined]
         self.project._route_cache = (key, (  # type: ignore[attr-defined]
             self.wires, self.net_edges, self.net_pins, self.junctions,
-            self.errors[n_errors:]))
+            self.errors[n_errors:], self.dangling_ties))
+
+    def _tie_groups(self, pts: list[tuple[float, float]],
+                    keys: list[str]) -> list[tuple[list[tuple[float, float]], list[str]]]:
+        """Split a net into one wire tree per net-tie symbol.
+
+        With two or more GND/VCC/label symbols in a net, each ordinary pin is
+        wired only to the symbol nearest to it (or to the one the human picked
+        in layout["ties"]), and the symbols are never wired to each other —
+        the same convention as KiCad or Eagle. With fewer than two symbols the
+        whole net is one tree, exactly as before.
+        """
+        ties = [k for k, ref in enumerate(keys)
+                if self._type_of(ref) in TIE_TYPES]
+        if len(ties) < 2:
+            return [(pts, keys)]
+        tie_by_comp = {keys[k].split(".", 1)[0]: k for k in ties}
+        overrides = self.project.layout.get("ties") or {}
+        groups: dict[int, list[int]] = {t: [t] for t in ties}
+        for k, ref in enumerate(keys):
+            if k in groups:
+                continue
+            target = tie_by_comp.get(str(overrides.get(ref, "")))
+            if target is None:
+                px, py = pts[k]
+                target = min(ties, key=lambda t: abs(pts[t][0] - px)
+                             + abs(pts[t][1] - py))
+            groups[target].append(k)
+        for t, members in groups.items():
+            if len(members) == 1:
+                self.dangling_ties.append(keys[t].split(".", 1)[0])
+        return [([pts[k] for k in members], [keys[k] for k in members])
+                for members in groups.values() if len(members) > 1]
+
+    def _type_of(self, ref: str) -> str:
+        comp = self._by_id.get(ref.split(".", 1)[0])
+        return comp.comp_type if comp else ""
+
+    def _names_itself(self, net: dict[str, Any]) -> bool:
+        """True if a symbol on this net already prints the net's name, so a
+        second copy along the wire would only add clutter."""
+        for ref in net["pins"]:
+            comp = self._by_id.get(ref.split(".", 1)[0])
+            if comp is None:
+                continue
+            if comp.comp_type == "label":
+                return True
+            if comp.comp_type in ("vcc", "vdd") and \
+                    comp.value.strip().lower() == net["name"].strip().lower():
+                return True
+        return False
 
     # ── Notes ─────────────────────────────────────────────────────────────
 
@@ -247,6 +307,8 @@ class Scene:
     # ── Net labels ───────────────────────────────────────────────────────────
 
     def _build_net_labels(self) -> list[dict[str, Any]]:
+        if not self.project.layout.get("showNetNames", True):
+            return []
         boxes = []
         for c in self.components:
             m = 6
@@ -263,7 +325,7 @@ class Scene:
         out: list[dict[str, Any]] = []
         taken: list[tuple[float, float, float, float]] = []
         for net, segs in zip(self.nets, self.wires):
-            if not segs or len(net["pins"]) < 2:
+            if not segs or len(net["pins"]) < 2 or self._names_itself(net):
                 continue
             name = net["name"]
             bg_w = max(len(name) * 5.5 + 6, 16)
@@ -381,6 +443,7 @@ class Scene:
                  "pins": n["pins"], "segments": s, "edges": e}
                 for n, s, e in zip(self.nets, self.wires, self.net_edges) if s
             ],
+            "ties": dict(self.project.layout.get("ties") or {}),
             "junctions": sorted(self.junctions),
             "netLabels": self.net_labels,
             "notes": self.notes,
