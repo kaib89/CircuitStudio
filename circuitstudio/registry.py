@@ -62,6 +62,10 @@ KNOWN_TYPES: list[str] = sorted(
 # Types whose pins are defined by the caller rather than fixed by the symbol.
 CONFIGURABLE_TYPES: frozenset[str] = frozenset(list(_BOARDS) + ["ic", "connector"])
 
+# Symbols that connect by name: every ground symbol is the same node, every
+# "PITCH_F" label is the same node. No wire is drawn between two of them.
+NET_SYMBOL_TYPES: frozenset[str] = frozenset({"ground", "vcc", "vdd", "label"})
+
 
 class UnknownComponentType(ValueError):
     pass

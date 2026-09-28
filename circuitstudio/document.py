@@ -17,7 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .registry import build_component
+from .blocks import INNER_GAP, Block, Pin, arrange as arrange_blocks
+from .registry import NET_SYMBOL_TYPES, build_component
 from .symbols import Component
 
 DEFAULT_GRID = 20
@@ -245,16 +246,35 @@ class Project:
 
     # ── Placement ────────────────────────────────────────────────────────────
 
+    def _symbol_ids(self) -> set[str]:
+        return {str(s.get("id", "")) for s in self.circuit.get("components", [])
+                if str(s.get("type", "")).lower() in NET_SYMBOL_TYPES}
+
     def _adjacency(self) -> dict[str, set[str]]:
-        adj: dict[str, set[str]] = {}
+        """Which real parts should sit near each other.
+
+        Net symbols are left out (they get hung onto their pins afterwards),
+        and so are the power rails: in GND every part touches every other one,
+        which pulled the whole sheet into one clump. A part that only hangs on
+        rails — a decoupling cap — still gets its rail neighbours as a fallback.
+        """
+        symbols = self._symbol_ids()
+        signal: dict[str, set[str]] = {}
+        power: dict[str, set[str]] = {}
         for net in self.circuit.get("nets", []):
+            name = str(net.get("name", ""))
+            target = power if is_ground_net(name) or is_supply_net(name) else signal
             comp_ids = [str(p).split(".")[0] for p in net.get("pins", [])]
+            comp_ids = [c for c in comp_ids if c not in symbols]
             for i, a in enumerate(comp_ids):
                 for b in comp_ids[i + 1:]:
                     if a != b:
-                        adj.setdefault(a, set()).add(b)
-                        adj.setdefault(b, set()).add(a)
-        return adj
+                        target.setdefault(a, set()).add(b)
+                        target.setdefault(b, set()).add(a)
+        for cid, nbrs in power.items():
+            if cid not in signal:
+                signal[cid] = nbrs
+        return signal
 
     def autoplace(self) -> list[str]:
         """Give every component without a stored position a rough spot.
@@ -283,30 +303,35 @@ class Project:
                 self._occupy(occupied, self._to_cell(p), footprints[cid])
 
         adj = self._adjacency()
+        symbols = self._symbol_ids()
 
-        def free_cell(cell: tuple[int, int], size: tuple[int, int]) -> tuple[int, int]:
-            if not self._collides(occupied, cell, size):
-                return cell
-            for radius in range(1, 60):
-                for dr in range(-radius, radius + 1):
-                    for dc in range(-radius, radius + 1):
-                        if abs(dr) != radius and abs(dc) != radius:
-                            continue
-                        cand = (cell[0] + dc, cell[1] + dr)
-                        if not self._collides(occupied, cand, size):
-                            return cand
-            return (cell[0] + 2 * len(occupied) + 1, cell[1])
+        parts = [c for c in unplaced if c not in symbols]
+        blocks = self._group_blocks(parts, specs)
+        if blocks:
+            self._place_blocks(blocks, specs, adj, footprints)
+            for cid in (c for members in blocks for c in members):
+                self._occupy(occupied, self._to_cell(positions[cid]), footprints[cid])
+            parts = [c for c in parts if c not in positions]
+        self._grid_place(parts, adj, positions, occupied, footprints)
+        # Symbols that found no pin to sit on (more symbols than pins).
+        leftovers = self._attach_symbols([c for c in unplaced if c in symbols])
+        self._grid_place(leftovers, adj, positions, occupied, footprints)
+        return unplaced
 
-        for cid in self._placement_order(unplaced, adj, positions):
+    def _grid_place(self, ids: list[str], adj: dict[str, set[str]],
+                    positions: dict[str, Any], occupied: set[tuple[int, int]],
+                    footprints: dict[str, tuple[int, int]]) -> None:
+        """Put each part at the centre of its placed neighbours, or the
+        nearest free cell to it."""
+        for cid in self._placement_order(ids, adj, positions):
             anchors = [positions[n] for n in adj.get(cid, ()) if n in positions]
             if anchors:
                 ax = sum(a.get("x", 0) for a in anchors) / len(anchors)
                 ay = sum(a.get("y", 0) for a in anchors) / len(anchors)
                 cell = (round(ax / AUTO_STEP), round(ay / AUTO_STEP))
-                cell = self._preferred_cell(specs[cid], cell)
             else:
                 cell = (0, 0)
-            cell = free_cell(cell, footprints[cid])
+            cell = self._free_cell(occupied, cell, footprints[cid])
             self._occupy(occupied, cell, footprints[cid])
             positions[cid] = {
                 "x": cell[0] * AUTO_STEP,
@@ -314,7 +339,245 @@ class Project:
                 "rotation": 0,
                 "auto": True,
             }
-        return unplaced
+
+    @classmethod
+    def _free_cell(cls, occupied: set[tuple[int, int]], cell: tuple[int, int],
+                   size: tuple[int, int]) -> tuple[int, int]:
+        if not cls._collides(occupied, cell, size):
+            return cell
+        for radius in range(1, 60):
+            for dr in range(-radius, radius + 1):
+                for dc in range(-radius, radius + 1):
+                    if abs(dr) != radius and abs(dc) != radius:
+                        continue
+                    cand = (cell[0] + dc, cell[1] + dr)
+                    if not cls._collides(occupied, cand, size):
+                        return cand
+        return (cell[0] + 2 * len(occupied) + 1, cell[1])
+
+    # ── Groups ───────────────────────────────────────────────────────────────
+
+    def _group_blocks(self, parts: list[str],
+                      specs: dict[str, dict[str, Any]]) -> list[list[str]]:
+        """The groups to lay out as blocks, plus every loose part as a block
+        of its own.
+
+        A group of which some part already has a position is not a block: its
+        new parts simply join the others via the normal placement. A circuit
+        without any groups that is arranged from scratch counts as one group —
+        the block layout beats the grid placer there too. Empty when neither
+        applies (a few new parts next to placed ones).
+        """
+        symbols = self._symbol_ids()
+        groups: dict[str, list[str]] = {}
+        for cid, spec in specs.items():
+            name = spec.get("group")
+            if isinstance(name, str) and name.strip() and cid not in symbols:
+                groups.setdefault(name.strip(), []).append(cid)
+        todo = set(parts)
+        if not groups:
+            real = [c for c in specs if c not in symbols]
+            fresh = len(real) > 1 and all(c in todo for c in real)
+            return [real] if fresh else []
+        blocks = [m for m in groups.values() if all(c in todo for c in m)]
+        if not blocks:
+            return []
+        grouped = {c for m in groups.values() for c in m}
+        return blocks + [[c] for c in parts if c not in grouped]
+
+    def _place_blocks(self, blocks: list[list[str]], specs: dict[str, dict[str, Any]],
+                      adj: dict[str, set[str]],
+                      footprints: dict[str, tuple[int, int]]) -> None:
+        """Lay out each block on its own, then put the blocks side by side."""
+        positions: dict[str, Any] = self.layout["positions"]
+        symbols = self._symbol_ids()
+        pin_net: dict[str, str] = {}
+        rails: set[str] = set()
+        for net in self.circuit.get("nets", []):
+            name = str(net.get("name", ""))
+            if is_ground_net(name) or is_supply_net(name):
+                rails.add(name)
+            for ref in net.get("pins", []):
+                pin_net[str(ref)] = name
+
+        # Room a net label will need once it is hung onto a pin: its tag plus
+        # the stub. (Ground and supply symbols are small and find a gap of
+        # their own; reserving room for them only spreads the blocks apart.)
+        reserve: dict[str, float] = {}
+        by_id = {str(s.get("id", "")): s for s in self.circuit.get("components", [])}
+        for net in self.circuit.get("nets", []):
+            name = str(net.get("name", ""))
+            for ref in net.get("pins", []):
+                spec = by_id.get(str(ref).split(".")[0], {})
+                if str(spec.get("type", "")).lower() == "label":
+                    text = str(spec.get("value") or spec.get("id", ""))
+                    need = max(len(text) * 7 + 16, 44) + 50.0
+                    reserve[name] = max(reserve.get(name, 0.0), need)
+
+        def drawn_box(comp: Component) -> tuple[float, float, float, float]:
+            boxes = [comp.extent_bbox(), *comp.label_boxes()]
+            for p in comp.pins:
+                need = reserve.get(pin_net.get(f"{comp.comp_id}.{p.name}", ""))
+                if need:
+                    x, y = comp.abs_pin_pos(p.name)
+                    dx, dy = _outward(comp, x, y)
+                    boxes.append((min(x, x + dx * need), min(y, y + dy * need),
+                                  max(x, x + dx * need), max(y, y + dy * need)))
+            return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+                    max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+        def pins_of(comp: Component) -> list[Pin]:
+            out = []
+            for p in comp.pins:
+                net = pin_net.get(f"{comp.comp_id}.{p.name}")
+                if net is not None:
+                    x, y = comp.abs_pin_pos(p.name)
+                    out.append(Pin(net, x, y, *_outward(comp, x, y)))
+            return out
+
+        fixed, _ = self.instantiate()
+        fixed = [c for c in fixed if c.comp_id in positions]
+        fixed_boxes = [drawn_box(c) for c in fixed]
+        fixed_pins = [pin for c in fixed if c.comp_id not in symbols
+                      for pin in pins_of(c)]
+
+        local_layouts: list[dict[str, Any]] = []
+        shapes: list[Block] = []
+        for members in blocks:
+            # Inside the block every part is a little block of its own.
+            comps: list[Component] = []
+            for cid in members:
+                try:
+                    comps.append(build_component(specs[cid]))
+                except (ValueError, KeyError, TypeError):
+                    pass
+            parts = [Block(box=drawn_box(c), pins=pins_of(c)) for c in comps]
+            inner = arrange_blocks(parts, [], [], rails, gap=INNER_GAP)
+            local: dict[str, Any] = {cid: {"x": 0.0, "y": 0.0, "rotation": 0,
+                                           "auto": True} for cid in members}
+            boxes, pins = [], []
+            for comp, (ox, oy) in zip(comps, inner):
+                comp.x, comp.y = ox, oy
+                local[comp.comp_id].update(x=ox, y=oy)
+                boxes.append(drawn_box(comp))
+                pins += pins_of(comp)
+            box = (min(b[0] for b in boxes), min(b[1] for b in boxes),
+                   max(b[2] for b in boxes), max(b[3] for b in boxes)) if boxes \
+                else (-30.0, -30.0, 30.0, 30.0)
+            local_layouts.append(local)
+            shapes.append(Block(box=box, pins=pins))
+
+        offsets = arrange_blocks(shapes, fixed_boxes, fixed_pins, rails)
+        for local, (ox, oy) in zip(local_layouts, offsets):
+            for cid, p in local.items():
+                p["x"] = round(p["x"] + ox, 1)
+                p["y"] = round(p["y"] + oy, 1)
+                positions[cid] = p
+
+    def _attach_symbols(self, todo: list[str]) -> list[str]:
+        """Hang each new ground/supply/label symbol right onto one of its pins.
+
+        Symbols connect by name, so their job is to save wires. Per net, the
+        next symbol goes to the pin furthest from the symbols already there —
+        the pin that would otherwise need the longest wire. Pins that already
+        have a symbol right next to them are skipped.
+
+        Returns the symbols that found no pin.
+        """
+        if not todo:
+            return []
+        positions: dict[str, Any] = self.layout["positions"]
+        comps, _ = self.instantiate()
+        by_id = {c.comp_id: c for c in comps}
+        symbols = self._symbol_ids()
+        pending = set(todo)
+        obstacles = [self._inflate(c.body_bbox(), 6) for c in comps
+                     if c.comp_id not in symbols and c.comp_id in positions]
+        obstacles += [c.extent_bbox() for c in comps
+                      if c.comp_id in symbols and c.comp_id in positions
+                      and c.comp_id not in pending]
+
+        for net in self.circuit.get("nets", []):
+            refs = [str(r) for r in net.get("pins", [])]
+            new_syms = [r.split(".")[0] for r in refs if r.split(".")[0] in pending]
+            if not new_syms:
+                continue
+            anchors: list[tuple[float, float]] = []   # pins that have a symbol
+            pins: list[tuple[str, tuple[float, float]]] = []
+            for ref in refs:
+                cid, _, pin = ref.partition(".")
+                comp = by_id.get(cid)
+                if comp is None or cid in pending or cid not in positions:
+                    continue
+                try:
+                    pos = comp.abs_pin_pos(pin)
+                except KeyError:
+                    continue
+                if cid in symbols:
+                    anchors.append(pos)
+                else:
+                    pins.append((ref, pos))
+            free = [(r, q) for r, q in pins
+                    if all(abs(q[0] - a[0]) + abs(q[1] - a[1]) > 80 for a in anchors)]
+            for sid in new_syms:
+                if not free:
+                    break
+                pick = max(free, key=lambda f: min(
+                    (abs(f[1][0] - a[0]) + abs(f[1][1] - a[1]) for a in anchors),
+                    default=0.0))
+                free.remove(pick)
+                ref, pin_pos = pick
+                sym = by_id[sid]
+                x, y, flip = self._symbol_spot(sym, by_id[ref.split(".")[0]],
+                                               pin_pos, obstacles)
+                positions[sid] = {"x": round(x, 1), "y": round(y, 1),
+                                  "rotation": 0, "flip": flip, "auto": True}
+                sym.x, sym.y, sym.flip = x, y, flip
+                obstacles.append(sym.extent_bbox())
+                anchors.append(pin_pos)
+                pending.discard(sid)
+        return [c for c in todo if c in pending]
+
+    @staticmethod
+    def _inflate(box: tuple[float, float, float, float],
+                 d: float) -> tuple[float, float, float, float]:
+        return (box[0] - d, box[1] - d, box[2] + d, box[3] + d)
+
+    @staticmethod
+    def _symbol_spot(sym: Component, comp: Component, pin: tuple[float, float],
+                     obstacles: list[tuple[float, float, float, float]]
+                     ) -> tuple[float, float, bool]:
+        """Where a net symbol should sit to serve `pin` of `comp`.
+
+        Ground goes below the pin, supply above, a label continues the pin
+        outwards. The first candidate whose drawing hits nothing wins.
+        """
+        px, py = pin
+        dx, dy = _outward(comp, px, py)
+
+        cands: list[tuple[float, float, bool]] = []
+        if sym.comp_type == "label":
+            for k in range(6):
+                if dx:
+                    cands.append((px + dx * (30 + 20 * k), py, dx < 0))
+                else:
+                    cands.append((px + 20 * k, py + dy * 30, False))
+        else:
+            down = 1 if sym.comp_type == "ground" else -1
+            # A pin pointing away from the rail first leaves its part sideways.
+            shifts = [0.0] if dy != -down else []
+            shifts += [dx * 40 or 40, dx * 80 or -40, -(dx * 40 or 80)]
+            for dist in (45, 85, 125):
+                for sx in shifts:
+                    cands.append((px + sx, py + down * dist, False))
+
+        def hits(c: tuple[float, float, bool]) -> bool:
+            sym.x, sym.y, sym.flip = c
+            b = sym.extent_bbox()
+            return any(b[0] < o[2] and o[0] < b[2] and b[1] < o[3] and o[1] < b[3]
+                       for o in obstacles)
+
+        return next((c for c in cands if not hits(c)), cands[0])
 
     # ── Auto-placement helpers ───────────────────────────────────────────────
 
@@ -362,17 +625,6 @@ class Project:
     def _collides(cls, occupied: set[tuple[int, int]], cell: tuple[int, int],
                   size: tuple[int, int]) -> bool:
         return any(c in occupied for c in cls._cells_of(cell, size))
-
-    @staticmethod
-    def _preferred_cell(spec: dict[str, Any],
-                        cell: tuple[int, int]) -> tuple[int, int]:
-        """Power symbols read best below (ground) or above (supply) their net."""
-        ctype = str(spec.get("type", "")).lower()
-        if ctype == "ground":
-            return (cell[0], cell[1] + 1)
-        if ctype in ("vcc", "vdd"):
-            return (cell[0], cell[1] - 1)
-        return cell
 
     @staticmethod
     def _placement_order(unplaced: list[str], adj: dict[str, set[str]],
@@ -522,6 +774,15 @@ class Project:
 
     def auto_placed_ids(self) -> list[str]:
         return [cid for cid, p in self.layout["positions"].items() if p.get("auto")]
+
+
+def _outward(comp: Component, px: float, py: float) -> tuple[int, int]:
+    """Which way a pin at (px, py) points out of its part: one of the four
+    unit directions."""
+    ox, oy = px - comp.x, py - comp.y
+    if abs(ox) >= abs(oy):
+        return (1 if ox >= 0 else -1), 0
+    return 0, (1 if oy >= 0 else -1)
 
 
 def list_projects(folder: Path) -> list[str]:

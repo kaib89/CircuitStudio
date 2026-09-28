@@ -161,6 +161,13 @@ class RoutingTests(TmpProjects):
                    for _ in range(rnd.randint(2, 12))]
             self.assertEqual(_mst_edges(pts), _old_mst(pts))
 
+    def test_mst_skips_edges_between_linked_points(self) -> None:
+        from circuitstudio.router import _mst_edges
+        # 0 and 3 are two far-apart ground symbols; 1 and 2 each sit next to one.
+        pts = [(0.0, 0.0), (0.0, 20.0), (500.0, 20.0), (500.0, 0.0)]
+        edges = {tuple(sorted(e)) for e in _mst_edges(pts, {0, 3})}
+        self.assertEqual(edges, {(0, 1), (2, 3)})
+
     def test_moving_a_part_keeps_unrelated_wires(self) -> None:
         p = self.chain()
         first = Scene(p)
@@ -206,6 +213,89 @@ class RoutingTests(TmpProjects):
         p.clear_routes()
         scene = Scene(p)
         self.assertEqual(scene.rerouted, sum(len(e) for e in scene.net_edges))
+
+    def test_net_symbols_are_not_wired_to_each_other(self) -> None:
+        comps = [{"id": "R1", "type": "resistor"}, {"id": "R2", "type": "resistor"},
+                 {"id": "GND1", "type": "ground"}, {"id": "GND2", "type": "ground"}]
+        nets = [{"name": "GND", "pins": ["R1.1", "GND1.pin", "R2.1", "GND2.pin"]}]
+        pos = {"R1": {"x": 0, "y": 0}, "R2": {"x": 600, "y": 0},
+               "GND1": {"x": -50, "y": 60}, "GND2": {"x": 550, "y": 60}}
+        scene = Scene(self.project(comps, nets, positions=pos))
+        keys = sorted(e["key"] for e in scene.net_edges[0])
+        self.assertEqual(keys, ["GND1.pin|R1.1", "GND2.pin|R2.1"])
+
+
+class PlacementTests(TmpProjects):
+    def test_symbols_hang_on_their_own_pins(self) -> None:
+        comps = [{"id": "R1", "type": "resistor"}, {"id": "R2", "type": "resistor"},
+                 {"id": "L1", "type": "label", "value": "SIG"},
+                 {"id": "GND1", "type": "ground"}, {"id": "GND2", "type": "ground"}]
+        nets = [{"name": "SIG", "pins": ["R1.2", "R2.1", "L1.pin"]},
+                {"name": "GND", "pins": ["R1.1", "GND1.pin", "R2.2", "GND2.pin"]}]
+        p = self.project(comps, nets)
+        scene = Scene(p)
+        by_id = {c.comp_id: c for c in scene.components}
+        gnd_pins = [by_id[r].abs_pin_pos(n) for r, n in (("R1", "1"), ("R2", "2"))]
+        for gid in ("GND1", "GND2"):
+            gx, gy = by_id[gid].abs_pin_pos("pin")
+            nearest = min(abs(gx - x) + abs(gy - y) for x, y in gnd_pins)
+            self.assertLessEqual(nearest, 100, f"{gid} is not next to a ground pin")
+        # Both ground symbols serve different pins.
+        self.assertEqual(len(scene.net_edges[1]), 2)
+
+    def test_rails_do_not_pull_parts_together(self) -> None:
+        comps = [{"id": "U1", "type": "ic", "pins": {"left": ["A"], "right": ["GND"]}},
+                 {"id": "R1", "type": "resistor"}, {"id": "R2", "type": "resistor"},
+                 {"id": "C1", "type": "capacitor"}]
+        nets = [{"name": "a", "pins": ["U1.A", "R1.1"]},
+                {"name": "GND", "pins": ["U1.GND", "R1.2", "R2.2", "C1.2"]},
+                {"name": "b", "pins": ["R2.1", "C1.1"]}]
+        adj = self.project(comps, nets)._adjacency()
+        self.assertEqual(adj["U1"], {"R1"})
+        self.assertEqual(adj["R2"], {"C1"})
+
+    def _two_groups(self, positions=None) -> Project:
+        comps = [{"id": "U1", "type": "ic", "group": "core",
+                  "pins": {"left": ["A", "B"], "right": ["C", "D"]}}]
+        nets = []
+        for g, pin in (("a", "A"), ("b", "B")):
+            comps += [{"id": f"R{g}1", "type": "resistor", "group": g},
+                      {"id": f"R{g}2", "type": "resistor", "group": g},
+                      {"id": f"C{g}1", "type": "capacitor", "group": g}]
+            nets += [{"name": f"{g}_in", "pins": [f"U1.{pin}", f"R{g}1.1"]},
+                     {"name": f"{g}_mid", "pins": [f"R{g}1.2", f"R{g}2.1", f"C{g}1.1"]}]
+        return self.project(comps, nets, positions=positions)
+
+    def test_groups_become_separate_blocks(self) -> None:
+        p = self._two_groups()
+        scene = Scene(p)
+        boxes = {}
+        for c in scene.components:
+            g = next(s.get("group") for s in p.circuit["components"]
+                     if s["id"] == c.comp_id)
+            b = c.body_bbox()
+            old = boxes.get(g, b)
+            boxes[g] = (min(old[0], b[0]), min(old[1], b[1]),
+                        max(old[2], b[2]), max(old[3], b[3]))
+        names = sorted(boxes)
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                A, B = boxes[a], boxes[b]
+                overlap = A[0] < B[2] and B[0] < A[2] and A[1] < B[3] and B[1] < A[3]
+                self.assertFalse(overlap, f"groups {a} and {b} are interleaved")
+
+    def test_group_with_a_placed_part_is_not_rebuilt(self) -> None:
+        p = self._two_groups(positions={"Ra1": {"x": 900, "y": 900, "locked": True}})
+        self.assertEqual((p.layout["positions"]["Ra1"]["x"],
+                          p.layout["positions"]["Ra1"]["y"]), (900, 900))
+        # The rest of group "a" joins its placed part instead of forming a block.
+        ra2 = p.layout["positions"]["Ra2"]
+        self.assertLess(abs(ra2["x"] - 900) + abs(ra2["y"] - 900), 400)
+
+    def test_group_must_be_a_string(self) -> None:
+        errors = mcp_server._validate({"components": [
+            {"id": "R1", "type": "resistor", "group": 3}], "nets": []})
+        self.assertTrue(any("'group' must be a string" in e for e in errors))
 
 
 class WaypointTests(TmpProjects):

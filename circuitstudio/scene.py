@@ -10,6 +10,7 @@ from typing import Any
 
 from . import erc
 from .document import Project, is_ground_net, is_supply_net, net_color, net_width
+from .registry import NET_SYMBOL_TYPES
 from .router import (
     ROUTE_GRID, Router, Segment, find_junctions,
 )
@@ -174,7 +175,10 @@ class Scene:
         for i in order:
             pts, keys = self._pin_positions(self.nets[i])
             self.net_pins[i] = pts
-            edges = router.route_net(pts, keys, waypoints=waypoints, stored=stored)
+            linked = {k for k, ref in enumerate(keys)
+                      if self._by_id[ref.split(".", 1)[0]].comp_type in NET_SYMBOL_TYPES}
+            edges = router.route_net(pts, keys, waypoints=waypoints, stored=stored,
+                                     linked=linked)
             self.net_edges[i] = edges
             self.wires[i] = [s for e in edges for leg in e["legs"] for s in leg]
         self.junctions = find_junctions(self.wires, self.net_pins)

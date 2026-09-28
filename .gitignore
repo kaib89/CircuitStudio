@@ -15,3 +15,6 @@ projects/*
 .idea/
 Thumbs.db
 desktop.ini
+
+# Local before/after previews
+preview/

@@ -50,6 +50,17 @@ CIRCUIT_SCHEMA = {
                     },
                     "n": {"type": "integer", "description": "Only for 'connector'"},
                     "side": {"type": "string", "description": "Only for 'connector'"},
+                    "group": {
+                        "type": "string",
+                        "description": (
+                            "Optional functional block, e.g. 'Pitch oscillator', "
+                            "'Power supply'. Parts of one group are auto-arranged "
+                            "as one compact block, and the blocks are then placed "
+                            "side by side. Worth it from ~15 parts on. Leave it "
+                            "off ground/supply/label symbols — those are hung "
+                            "onto their pins anyway."
+                        ),
+                    },
                 },
                 "required": ["id", "type"],
             },
@@ -278,6 +289,8 @@ def _validate(circuit: dict[str, Any]) -> list[str]:
             errors.append(f"Part '{cid}': {exc}")
             continue
         comps[cid] = comp
+        if "group" in spec and not isinstance(spec["group"], str):
+            errors.append(f"Part '{cid}': 'group' must be a string")
         names = [p.name for p in comp.pins]
         dupes = sorted({n for n in names if names.count(n) > 1})
         if dupes:

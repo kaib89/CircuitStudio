@@ -108,6 +108,23 @@ two (each half then connects a single pin), a part wired to nothing:
   as deliberately open.
 ```
 
+## Auto-arrange
+
+**Auto-arrange** throws away every position except the locked ones and starts
+over. It only has to give you something sensible to drag from:
+
+- Ground, supply and label symbols connect by name, as in any schematic
+  editor. No wire is drawn between two of them; each is hung directly onto
+  one of its pins instead (ground below, supply above, labels in line with the
+  pin).
+- Power rails do not pull parts together. Otherwise GND, which touches almost
+  everything, would pile the whole sheet into one heap.
+- Parts can carry a `group` (`"group": "Pitch oscillator"`). Each group is laid
+  out as a compact block, and the blocks are then set side by side where their
+  connecting wires come out shortest and straightest. For bigger circuits this
+  makes the most difference. Without groups the whole circuit is laid out
+  as one block.
+
 ## Getting the result back to the assistant
 
 The automatic arrangement is not worth showing anyone — it exists so you have
