@@ -400,17 +400,11 @@ def edge_key(a: str, b: str) -> str:
     return "|".join(sorted([a, b]))
 
 
-def _mst_edges(pts: list[tuple[float, float]],
-               linked: frozenset[int] | set[int] = frozenset()) -> list[tuple[int, int]]:
+def _mst_edges(pts: list[tuple[float, float]]) -> list[tuple[int, int]]:
     """Prim's MST on Manhattan distance, O(n^2).
 
     Picks the same edges as the plain triple loop it replaced: among equally
     short candidates the one with the lowest tree index i, then lowest j.
-
-    `linked` are points that are already connected to each other without a
-    wire (ground symbols, net labels of one name). They cost nothing between
-    themselves and those free edges are left out of the result, so every other
-    pin just wires to whichever symbol or pin is nearest.
     """
     n = len(pts)
     in_tree = [False] * n
@@ -423,10 +417,7 @@ def _mst_edges(pts: list[tuple[float, float]],
         for j in range(n):
             if in_tree[j]:
                 continue
-            if k in linked and j in linked:
-                d = 0.0
-            else:
-                d = abs(kx - pts[j][0]) + abs(ky - pts[j][1])
+            d = abs(kx - pts[j][0]) + abs(ky - pts[j][1])
             if d < best_d[j] or (d == best_d[j] and k < best_i[j]):
                 best_d[j] = d
                 best_i[j] = k
@@ -436,8 +427,7 @@ def _mst_edges(pts: list[tuple[float, float]],
     for _ in range(n - 1):
         j = min((j for j in range(n) if not in_tree[j]),
                 key=lambda j: (best_d[j], best_i[j], j))
-        if not (j in linked and best_i[j] in linked):
-            edges.append((best_i[j], j))
+        edges.append((best_i[j], j))
         in_tree[j] = True
         relax(j)
     return edges
@@ -560,7 +550,6 @@ class Router:
         pin_keys: list[str],
         waypoints: dict[str, list[tuple[float, float]]] | None = None,
         stored: dict[str, Any] | None = None,
-        linked: frozenset[int] | set[int] = frozenset(),
     ) -> list[dict]:
         """Connect the pins of one net with orthogonal wires.
 
@@ -575,9 +564,6 @@ class Router:
         pins and waypoints have not moved keeps its old wire if that is still
         valid, so dragging one part only reroutes the wires attached to it —
         both much faster and calmer than redrawing the whole sheet.
-
-        `linked` holds the indices of pins that belong to net symbols (see
-        `_mst_edges`); they are never wired to each other.
         """
         if len(pin_positions) < 2:
             return []
@@ -587,7 +573,7 @@ class Router:
         self._net_fresh = len(self._fresh)
 
         out: list[dict] = []
-        for i, j in _mst_edges(pts, linked):
+        for i, j in _mst_edges(pts):
             key = edge_key(pin_keys[i], pin_keys[j])
             wps = [tuple(w) for w in waypoints.get(key, [])]
             chain = [pts[i], *wps, pts[j]]

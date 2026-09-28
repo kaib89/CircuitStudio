@@ -31,6 +31,16 @@ SERVER_VERSION = "0.1.0"
 KNOWN_PROTOCOLS = {"2024-11-05", "2025-03-26", "2025-06-18"}
 FALLBACK_PROTOCOL = "2024-11-05"
 
+_TIE_DOC = (
+    "ground, vcc, vdd and label are net ties, not parts: several of them in "
+    "one net are connected by definition and never wired to each other. Each "
+    "ordinary pin of the net is wired only to the nearest of these symbols, "
+    "so use them generously — one GND symbol next to every part that needs "
+    "ground, and a label pair instead of a long signal wire across the sheet "
+    "(a 'label' needs value = net name). With only one such symbol the whole "
+    "net is wired to it as usual."
+)
+
 CIRCUIT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -41,7 +51,8 @@ CIRCUIT_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "id": {"type": "string", "description": "e.g. R1, U1, GND1"},
-                    "type": {"type": "string", "enum": KNOWN_TYPES},
+                    "type": {"type": "string", "enum": KNOWN_TYPES,
+                             "description": _TIE_DOC},
                     "value": {"type": "string", "description": "e.g. 10kΩ, 100nF"},
                     "pins": {
                         "type": "object",
@@ -192,7 +203,9 @@ TOOLS: list[dict[str, Any]] = [
             "but leaves the human-made layout untouched: known part IDs keep "
             "their position, new ones are roughly auto-placed. Validated BEFORE "
             "writing — on unknown types or wrong pin names nothing is written "
-            "and the errors are returned instead."
+            "and the errors are returned instead. GND/VCC/label symbols work "
+            "like in KiCad: put one next to each part that needs it instead "
+            "of routing one long wire to a single symbol (see list_component_types)."
         ),
         "inputSchema": {
             "type": "object",
@@ -212,7 +225,9 @@ TOOLS: list[dict[str, Any]] = [
             "Change part of an existing netlist instead of rewriting all of it: "
             "add/replace/remove parts, nets and notes, connect or disconnect "
             "pins. Cheaper and less error-prone than write_circuit for edits. "
-            "Same validation — on any error nothing is written."
+            "Same validation — on any error nothing is written. To tidy up a "
+            "long wire, add a second GND/VCC/label symbol to the net next to "
+            "the far pins — they are not wired to each other."
         ),
         "inputSchema": {
             "type": "object",
@@ -415,6 +430,11 @@ def tool_list_component_types(_args: dict[str, Any]) -> str:
     lines.append("'connector' takes n=<count>; its pins are named \"1\"..\"n\".")
     lines.append("Nets named VCC/VDD/3V3/5V... are drawn in red, "
                  "GND/VSS in black and thicker.")
+    lines.append("")
+    lines.append("Net ties: " + _TIE_DOC + " The rule check warns about a "
+                 "symbol that serves no pin, a label whose value differs from "
+                 "its net's name, and ground/supply symbols on a net whose "
+                 "name says otherwise.")
     return "\n".join(lines)
 
 
@@ -710,7 +730,8 @@ def tool_review_project(args: dict[str, Any]) -> list[dict[str, Any]]:
         lines.append("Problems while drawing:")
         lines += [f"- {e}" for e in scene.errors]
     lines.append("")
-    lines.append(format_report(erc_check(project.circuit, scene.components)))
+    # scene.erc also knows the arrangement, e.g. a GND symbol left hanging.
+    lines.append(format_report(scene.erc))
     lines.append("")
 
     if not state["reviewed"]:

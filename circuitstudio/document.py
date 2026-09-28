@@ -17,14 +17,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import ties
 from .blocks import INNER_GAP, Block, Pin, arrange as arrange_blocks
-from .registry import NET_SYMBOL_TYPES, build_component
+from .registry import build_component
 from .symbols import Component
 
 DEFAULT_GRID = 20
 AUTO_STEP = 60   # cell size of the auto-placement grid; big parts take several
 AUTO_GAP = 25    # breathing room around a symbol, in px
 DEFAULT_NOTE_W = 220
+REHOME_MIN = 100  # a pin this far from its GND/VCC/label deserves its own
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -33,9 +35,15 @@ _VCC_NAMES = {"vcc", "vdd", "v+", "5v", "3v3", "3.3v", "9v", "12v", "24v", "vin"
 _GND_NAMES = {"gnd", "vss", "v-", "0v", "agnd", "dgnd", "pgnd"}
 
 
+# "3.3V", "1V8", "+12V", "5V_USB" — a bare voltage is a rail.
+_VOLTAGE_NAME = re.compile(r"^\+?\d+([.,]\d+)?v\d*([_-].*)?$")
+
+
 def is_supply_net(name: str) -> bool:
     n = name.lower().strip()
-    return n in _VCC_NAMES or n.startswith(("vcc", "vdd", "v+", "+", "5v", "3v"))
+    return (n in _VCC_NAMES
+            or n.startswith(("vcc", "vdd", "v+", "+", "5v", "3v", "vbus", "vsys"))
+            or bool(_VOLTAGE_NAME.match(n)))
 
 
 def is_ground_net(name: str) -> bool:
@@ -178,6 +186,7 @@ class Project:
         self.layout.setdefault("wires", {})
         self.layout.setdefault("notes", {})
         self.layout.setdefault("routes", {})
+        self.layout.setdefault("ties", {})
         self.layout.setdefault("view", None)
 
         self.autoplace()
@@ -248,7 +257,7 @@ class Project:
 
     def _symbol_ids(self) -> set[str]:
         return {str(s.get("id", "")) for s in self.circuit.get("components", [])
-                if str(s.get("type", "")).lower() in NET_SYMBOL_TYPES}
+                if str(s.get("type", "")).lower() in ties.TIE_TYPES}
 
     def _adjacency(self) -> dict[str, set[str]]:
         """Which real parts should sit near each other.
@@ -287,6 +296,11 @@ class Project:
         Stale entries for deleted components are deliberately kept — if the LLM
         re-adds the same ID later it lands back where you put it.
         """
+        placed = self._place_new()
+        self.rehome_ties()
+        return placed
+
+    def _place_new(self) -> list[str]:
         positions: dict[str, Any] = self.layout["positions"]
         specs = {str(s.get("id", "")): s for s in self.circuit.get("components", [])
                  if str(s.get("id", ""))}
@@ -315,16 +329,22 @@ class Project:
         self._grid_place(parts, adj, positions, occupied, footprints)
         # Symbols that found no pin to sit on (more symbols than pins).
         leftovers = self._attach_symbols([c for c in unplaced if c in symbols])
-        self._grid_place(leftovers, adj, positions, occupied, footprints)
+        self._grid_place(leftovers, adj, positions, occupied, footprints,
+                         home=self._tie_homes(specs))
         return unplaced
 
     def _grid_place(self, ids: list[str], adj: dict[str, set[str]],
                     positions: dict[str, Any], occupied: set[tuple[int, int]],
-                    footprints: dict[str, tuple[int, int]]) -> None:
-        """Put each part at the centre of its placed neighbours, or the
-        nearest free cell to it."""
+                    footprints: dict[str, tuple[int, int]],
+                    home: Any = None) -> None:
+        """Put each part at the centre of its placed neighbours (or at
+        `home(cid, positions)` if that names a spot), else the nearest free
+        cell to it."""
         for cid in self._placement_order(ids, adj, positions):
             anchors = [positions[n] for n in adj.get(cid, ()) if n in positions]
+            spot = home(cid, positions) if home else None
+            if spot is not None:
+                anchors = [spot]
             if anchors:
                 ax = sum(a.get("x", 0) for a in anchors) / len(anchors)
                 ay = sum(a.get("y", 0) for a in anchors) / len(anchors)
@@ -491,11 +511,8 @@ class Project:
         by_id = {c.comp_id: c for c in comps}
         symbols = self._symbol_ids()
         pending = set(todo)
-        obstacles = [self._inflate(c.body_bbox(), 6) for c in comps
-                     if c.comp_id not in symbols and c.comp_id in positions]
-        obstacles += [c.extent_bbox() for c in comps
-                      if c.comp_id in symbols and c.comp_id in positions
-                      and c.comp_id not in pending]
+        # What a symbol must not land on: every part that already has a spot.
+        placed = [c for c in comps if c.comp_id in positions and c.comp_id not in pending]
 
         for net in self.circuit.get("nets", []):
             refs = [str(r) for r in net.get("pins", [])]
@@ -528,58 +545,164 @@ class Project:
                 free.remove(pick)
                 ref, pin_pos = pick
                 sym = by_id[sid]
-                x, y, flip = self._symbol_spot(sym, by_id[ref.split(".")[0]],
-                                               pin_pos, obstacles)
-                positions[sid] = {"x": round(x, 1), "y": round(y, 1),
-                                  "rotation": 0, "flip": flip, "auto": True}
-                sym.x, sym.y, sym.flip = x, y, flip
-                obstacles.append(sym.extent_bbox())
+                self._park_tie(sym, by_id[ref.split(".")[0]], pin_pos, placed)
+                positions[sid] = {"x": sym.x, "y": sym.y, "rotation": sym.rotation,
+                                  "flip": sym.flip, "auto": True}
+                placed.append(sym)
                 anchors.append(pin_pos)
                 pending.discard(sid)
         return [c for c in todo if c in pending]
 
-    @staticmethod
-    def _inflate(box: tuple[float, float, float, float],
-                 d: float) -> tuple[float, float, float, float]:
-        return (box[0] - d, box[1] - d, box[2] + d, box[3] + d)
-
-    @staticmethod
-    def _symbol_spot(sym: Component, comp: Component, pin: tuple[float, float],
-                     obstacles: list[tuple[float, float, float, float]]
-                     ) -> tuple[float, float, bool]:
-        """Where a net symbol should sit to serve `pin` of `comp`.
-
-        Ground goes below the pin, supply above, a label continues the pin
-        outwards. The first candidate whose drawing hits nothing wins.
-        """
-        px, py = pin
-        dx, dy = _outward(comp, px, py)
-
-        cands: list[tuple[float, float, bool]] = []
-        if sym.comp_type == "label":
-            for k in range(6):
-                if dx:
-                    cands.append((px + dx * (30 + 20 * k), py, dx < 0))
-                else:
-                    cands.append((px + 20 * k, py + dy * 30, False))
-        else:
-            down = 1 if sym.comp_type == "ground" else -1
-            # A pin pointing away from the rail first leaves its part sideways.
-            shifts = [0.0] if dy != -down else []
-            shifts += [dx * 40 or 40, dx * 80 or -40, -(dx * 40 or 80)]
-            for dist in (45, 85, 125):
-                for sx in shifts:
-                    cands.append((px + sx, py + down * dist, False))
-
-        def hits(c: tuple[float, float, bool]) -> bool:
-            sym.x, sym.y, sym.flip = c
-            b = sym.extent_bbox()
-            return any(b[0] < o[2] and o[0] < b[2] and b[1] < o[3] and o[1] < b[3]
-                       for o in obstacles)
-
-        return next((c for c in cands if not hits(c)), cands[0])
-
     # ── Auto-placement helpers ───────────────────────────────────────────────
+
+    def rehome_ties(self) -> list[str]:
+        """Move idle GND/VCC/label symbols to the pins that need them.
+
+        A symbol serves only the pins nearest to it, so one that is nobody's
+        nearest hangs in the air while some pin runs a long wire to a symbol
+        far away. Symbols the human has never touched (still "auto") are moved
+        next to the worst-served pin until no pin is far from its symbol or no
+        idle symbol is left. Anything the human placed stays where it is.
+        """
+        positions: dict[str, Any] = self.layout["positions"]
+        overrides = self.layout.get("ties") or {}
+        comps, _ = self.instantiate()
+        by_id = {c.comp_id: c for c in comps}
+
+        def type_of(ref: str) -> str:
+            return by_id[ref.split(".", 1)[0]].comp_type
+
+        moved: list[str] = []
+        for net in self.circuit.get("nets", []):
+            refs: list[str] = []
+            pts: list[tuple[float, float]] = []
+            for ref in dict.fromkeys(str(r) for r in net.get("pins", [])):
+                cid, _, pin = ref.partition(".")
+                comp = by_id.get(cid)
+                try:
+                    pts.append(comp.abs_pin_pos(pin))  # type: ignore[union-attr]
+                except (AttributeError, KeyError):
+                    continue
+                refs.append(ref)
+
+            for _ in range(len(refs)):
+                groups = ties.assign(refs, pts, type_of, overrides)
+                if groups is None:
+                    break
+                def movable(t: int) -> bool:
+                    return bool(positions.get(refs[t].split(".", 1)[0], {}).get("auto"))
+
+                far = [(ties.distance(pts[t], pts[k]), k, t)
+                       for t, members in groups.items() for k in members[1:]
+                       if refs[k] not in overrides]
+                if not far:
+                    break
+                gap, k, served_by = max(far)
+                if gap <= REHOME_MIN:
+                    break
+                # An idle symbol first; failing that, the far pin's own symbol
+                # if everything it serves is far away (moving it strands nobody).
+                idle = [t for t, members in groups.items()
+                        if len(members) == 1 and movable(t)]
+                if idle:
+                    t = idle[0]
+                elif movable(served_by) and all(
+                        ties.distance(pts[served_by], pts[m]) > REHOME_MIN
+                        for m in groups[served_by][1:]):
+                    t = served_by
+                else:
+                    break
+                sym = by_id[refs[t].split(".", 1)[0]]
+                owner = by_id[refs[k].split(".", 1)[0]]
+                self._park_tie(sym, owner, pts[k], comps)
+                pts[t] = sym.abs_pin_pos(refs[t].split(".", 1)[1])
+                positions[sym.comp_id] = {
+                    "x": sym.x, "y": sym.y, "rotation": sym.rotation,
+                    "flip": sym.flip, "auto": True,
+                }
+                moved.append(sym.comp_id)
+        if moved:
+            self.version += 1
+        return moved
+
+    @staticmethod
+    def _park_tie(sym: Component, owner: Component, pin: tuple[float, float],
+                  comps: list[Component]) -> None:
+        """Put `sym` just outside `pin`, on the side the pin points to, where
+        it overlaps no other part if possible."""
+        px, py = pin
+        dx, dy = px - owner.x, py - owner.y
+        side = ("left" if dx < 0 else "right") if abs(dx) >= abs(dy) else \
+               ("top" if dy < 0 else "bottom")
+        sx = {"left": -1, "right": 1}.get(side, 0)
+
+        def spot(g: float) -> tuple[float, float, int, bool]:
+            if sym.comp_type == "ground":     # pin 25 above the centre
+                if side == "top":
+                    return (px, py - g - 25, 180, False)
+                if side == "bottom":
+                    return (px, py + g + 25, 0, False)
+                return (px + sx * g, py + 25, 0, False)
+            if sym.comp_type in ("vcc", "vdd"):  # pin 25 below the centre
+                if side == "bottom":
+                    return (px, py + g + 25, 180, False)
+                if side == "top":
+                    return (px, py - g - 25, 0, False)
+                return (px + sx * g, py - 25, 0, False)
+            # label: pin at the tip, the tag points away from the part
+            return {"left": (px - g, py, 0, True), "right": (px + g, py, 0, False),
+                    "top": (px, py - g, 270, False),
+                    "bottom": (px, py + g, 90, False)}[side]
+
+        others = [c.body_bbox() for c in comps if c is not sym]
+        choice = None
+        for g in (30, 50, 70, 90):
+            sym.x, sym.y, sym.rotation, sym.flip = spot(g)
+            x0, y0, x1, y1 = sym.extent_bbox()
+            if not any(x0 < bx1 and bx0 < x1 and y0 < by1 and by0 < y1
+                       for bx0, by0, bx1, by1 in others):
+                choice = (sym.x, sym.y, sym.rotation, sym.flip)
+                break
+        sym.x, sym.y, sym.rotation, sym.flip = choice or spot(30)
+        sym.x, sym.y = round(sym.x, 1), round(sym.y, 1)
+
+    def _tie_homes(self, specs: dict[str, Any]):
+        """Where a GND/VCC/label symbol should go when its net has several.
+
+        Each such symbol only gets wired to the pins nearest to it, so piling
+        all of them onto the middle of the net would serve nobody. Instead
+        every symbol goes next to the part of its net that is furthest from
+        the symbols already placed — spreading them out over the parts.
+        """
+        nets: dict[str, tuple[list[str], list[str]]] = {}
+        for net in self.circuit.get("nets", []):
+            ids = list(dict.fromkeys(str(p).split(".")[0]
+                                     for p in net.get("pins", [])))
+            symbols = [c for c in ids
+                       if str(specs.get(c, {}).get("type", "")).lower() in ties.TIE_TYPES]
+            if len(symbols) < 2:
+                continue
+            parts = [c for c in ids if c not in symbols and c in specs]
+            for t in symbols:
+                nets[t] = (symbols, parts)
+
+        def home(cid: str, positions: dict[str, Any]) -> dict[str, Any] | None:
+            if cid not in nets:
+                return None
+            symbols, parts = nets[cid]
+            placed_parts = [positions[c] for c in parts if c in positions]
+            if not placed_parts:
+                return None
+            siblings = [positions[t] for t in symbols if t != cid and t in positions]
+
+            def spare(p: dict[str, Any]) -> float:
+                if not siblings:
+                    return 0.0
+                return min(abs(p.get("x", 0) - s.get("x", 0))
+                           + abs(p.get("y", 0) - s.get("y", 0)) for s in siblings)
+            return max(placed_parts, key=spare)
+        return home
+
 
     @staticmethod
     def _to_cell(pos: dict[str, Any]) -> tuple[int, int]:
@@ -701,6 +824,33 @@ class Project:
         else:
             wires.pop(edge, None)
         self.version += 1
+
+    def set_tie(self, part: str, symbol: str | None) -> list[str]:
+        """Wire every pin of `part` that shares a net with the GND/VCC/label
+        `symbol` to that symbol, overriding the nearest-symbol rule.
+        symbol=None hands all of `part`'s pins back to that rule.
+
+        Returns the pin references that changed hands.
+        """
+        ties: dict[str, str] = self.layout.setdefault("ties", {})
+        prefix = f"{part}."
+        if symbol is None:
+            dropped = [ref for ref in ties if ref.startswith(prefix)]
+            for ref in dropped:
+                del ties[ref]
+            self.version += 1
+            return dropped
+        changed: list[str] = []
+        for net in self.circuit.get("nets", []):
+            pins = [str(p) for p in net.get("pins", [])]
+            if not any(p.split(".", 1)[0] == symbol for p in pins):
+                continue
+            for ref in pins:
+                if ref.startswith(prefix):
+                    ties[ref] = symbol
+                    changed.append(ref)
+        self.version += 1
+        return changed
 
     # ── Notes ────────────────────────────────────────────────────────────────
 

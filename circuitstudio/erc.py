@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .document import is_ground_net, is_supply_net
 from .symbols import Component
 
 WARNING = "warning"
@@ -95,12 +96,53 @@ def check(circuit: dict[str, Any],
                 f"Net name '{name}' is used {n} times. Separate nets with the "
                 f"same name look like one net in the drawing.", name))
 
+    out += _tie_findings(circuit, known)
+
     connected = {r.split(".", 1)[0] for r in counts}
     for c in components:
         if c.comp_id not in connected:
             out.append(_finding(
                 f"{c.comp_id} is not connected to any net.", c.comp_id))
 
+    return out
+
+
+def dangling_tie(comp_id: str) -> dict[str, str]:
+    """A GND/VCC/label symbol that ended up with no pin to serve — it is
+    the nearest symbol of its net for none of the net's pins."""
+    finding = _finding(
+        f"{comp_id} is not the nearest symbol for any pin of its net, so it "
+        f"hangs in the air. Drag it next to the pins it should serve, or have "
+        f"it removed if it is one too many.", comp_id)
+    finding["kind"] = "placement"   # the human's to fix, not the assistant's
+    return finding
+
+
+def _tie_findings(circuit: dict[str, Any],
+                  known: dict[str, Component]) -> list[dict[str, str]]:
+    """GND/VCC/label symbols whose net contradicts what they claim."""
+    out: list[dict[str, str]] = []
+    for net in circuit.get("nets", []) or []:
+        if not isinstance(net, dict):
+            continue
+        name = str(net.get("name", ""))
+        for cid in dict.fromkeys(str(p).split(".", 1)[0]
+                                 for p in net.get("pins", []) or []):
+            comp = known.get(cid)
+            if comp is None:
+                continue
+            if comp.comp_type == "label" and comp.value.strip() != name.strip():
+                out.append(_finding(
+                    f"Label {cid} reads '{comp.value}' but sits on net '{name}'. "
+                    f"Set its value to the net name, or it will be misread.", cid))
+            elif comp.comp_type == "ground" and not is_ground_net(name):
+                out.append(_finding(
+                    f"Ground symbol {cid} is on net '{name}', which is not a "
+                    f"ground net. Use a label there instead.", cid))
+            elif comp.comp_type in ("vcc", "vdd") and not is_supply_net(name):
+                out.append(_finding(
+                    f"Supply symbol {cid} is on net '{name}', which is not a "
+                    f"supply net. Use a label there instead.", cid))
     return out
 
 
