@@ -81,7 +81,7 @@ currently running.
 Tools: `list_projects`, `list_component_types`, `list_library`,
 `get_library_part`, `add_library_part`, `get_circuit`, `write_circuit`,
 `update_circuit`, `get_breadboard`, `write_breadboard`, `update_breadboard`,
-`open_editor`, `review_project`.
+`autoplace_breadboard`, `open_editor`, `review_project`.
 
 `update_circuit` edits an existing netlist in place — add, replace or remove
 parts, nets and notes, connect or disconnect pins, mark pins as no-connect — so
@@ -297,6 +297,25 @@ both exist. The Pico's 40 header pins are built in: name the schematic pins
 `AGND`, and all its GND pins count as one. AGND is kept separate — whether it
 is joined to GND on the board was not verified.
 
+### Auto-place
+
+**Place the rest** puts every part that is not on the board yet onto it and
+leaves what is already placed alone; **Re-place all** lays the whole board out
+afresh (`Ctrl+Z` brings the old one back). Without a plan, the Breadboard view
+offers to create one this way. The assistant has the same as
+`autoplace_breadboard` — "rest" is always allowed, starting over on a plan you
+arranged needs your consent (`replace=true`).
+
+The layout follows a few simple rules: chips and boards in a row along the
+channel (boards first, then by `group`), ground on the − rails and the supply on
+the + rails, chip pins on those nets wired to the rail on their own side,
+two-lead parts bridging the columns of their two nets without lying on top of
+each other, fresh columns placed outwards from the chip, and jumper wires for
+whatever is still in pieces. The result always passes the check; a part that
+cannot be placed (no pinout, no room) is named. A small circuit gets a
+half-size board. Like the schematic's auto-arrange, it is a starting point to
+drag from — it knows nothing about RF layout, heat or mechanical fit.
+
 ### Parts library
 
 Real parts do not have to be typed in pin by pin. The library knows common
@@ -383,6 +402,7 @@ circuitstudio/
   library/       the built-in library parts, one JSON file each
   breadboard.py  breadboard plan: parsing and the check against the netlist
   bb_scene.py    breadboard drawing for the editor and the SVG export
+  bb_place.py    breadboard auto-placement
   scene.py       geometry; feeds both the editor and the SVG export
   server.py      local HTTP server (127.0.0.1 only)
   mcp_server.py  MCP server for assistants

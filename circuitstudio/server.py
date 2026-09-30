@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from .bb_place import autoplace
 from .bb_scene import BreadboardScene
 from .breadboard import HUMAN_EDIT
 from .document import Project, is_safe_name, list_projects
@@ -221,6 +222,22 @@ class Handler(BaseHTTPRequestHandler):
             with self.state.lock:
                 self.state.project.save_breadboard(plan)
                 payload = self.state.scene_payload()
+            self._json(payload)
+            return
+
+        if path == "/api/breadboard/autoplace":
+            mode = body.get("mode") if isinstance(body, dict) else None
+            if mode not in ("rest", "all"):
+                self._error(400, "expected {mode: 'rest' | 'all'}")
+                return
+            with self.state.lock:
+                proj = self.state.project
+                plan, log, failed = autoplace(proj.circuit, proj.breadboard, mode)
+                # Pressed by the human, so the result is theirs like any edit.
+                plan[HUMAN_EDIT] = datetime.now().astimezone().isoformat(timespec="seconds")
+                proj.save_breadboard(plan, backup=mode == "all")
+                payload = self.state.scene_payload()
+            payload["autoplace"] = {"log": log, "failed": failed}
             self._json(payload)
             return
 

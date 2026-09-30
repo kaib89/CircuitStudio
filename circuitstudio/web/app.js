@@ -1882,6 +1882,35 @@ async function bbDelete() {
   }
 }
 
+/** Let the server lay the board out: the missing parts only, or all afresh. */
+async function bbAutoplace(mode) {
+  const has = !!(bb && bb.exists);
+  if (mode === 'all' && has &&
+      !confirm('Lay the whole breadboard out afresh? Ctrl+Z brings the current one back.')) return;
+  if (has) {
+    bbUndo.push(JSON.stringify(bb.plan));
+    if (bbUndo.length > HISTORY_MAX) bbUndo.shift();
+    bbRedo.length = 0;
+  }
+  setStatus('Placing…');
+  try {
+    const payload = await api('/api/breadboard/autoplace', { mode });
+    if (mode === 'all' || !has) bbView = null;
+    applyPayload(payload);
+    applyMode();
+    const { log, failed } = payload.autoplace;
+    const placed = log.filter(l => l.startsWith('placed') || l.includes('off the board')).length;
+    setStatus(failed.length
+      ? `Placed ${placed} part(s); ${failed.length} could not go on — ${failed.join(' · ')}`
+      : placed ? `Placed ${placed} part(s). ${bbDefaultStatus().replace('Breadboard · ', '')}`
+               : 'Nothing left to place.');
+  } catch (err) { setStatus('Error: ' + err.message); }
+}
+
+document.getElementById('btnBbRest').addEventListener('click', () => bbAutoplace('rest'));
+document.getElementById('btnBbAll').addEventListener('click', () => bbAutoplace('all'));
+document.getElementById('btnBbCreate').addEventListener('click', () => bbAutoplace('all'));
+
 async function bbKeydown(evt) {
   if (evt.code === 'Space') { spaceDown = true; evt.preventDefault(); return; }
   if (!bb || !bb.exists) return;
