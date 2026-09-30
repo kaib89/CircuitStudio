@@ -21,6 +21,7 @@ from typing import Any
 
 from . import ties
 from .blocks import INNER_GAP, Block, Pin, arrange as arrange_blocks
+from .breadboard import HUMAN_EDIT
 from .registry import build_component
 from .symbols import Component
 
@@ -106,6 +107,7 @@ class Project:
         self.breadboard_error: str | None = None
         self._bb_mtime: float = 0.0
         self._backed_up = False
+        self._bb_backed_up = False
         self.routes_dirty = False    # set by Scene when it produced new wires
 
     # ── Paths ────────────────────────────────────────────────────────────────
@@ -129,6 +131,14 @@ class Project:
     @property
     def breadboard_svg_path(self) -> Path:
         return self.folder / f"{self.name}.breadboard.svg"
+
+    @property
+    def breadboard_png_path(self) -> Path:
+        return self.folder / f"{self.name}.breadboard.png"
+
+    @property
+    def breadboard_backup_path(self) -> Path:
+        return self.folder / f"{self.name}.breadboard.bak.json"
 
     @property
     def svg_path(self) -> Path:
@@ -215,11 +225,44 @@ class Project:
             return True
         return False
 
-    def save_breadboard(self, data: dict[str, Any]) -> None:
+    def save_breadboard(self, data: dict[str, Any], backup: bool = False) -> None:
+        """Write breadboard.json, keeping the previous plan recoverable.
+
+        Same rule as the layout: the copy is taken on the first save of a
+        session and whenever `backup` is set — e.g. right before the assistant
+        replaces the whole plan. Every save would be useless, since each drag
+        in the editor saves.
+        """
+        if (backup or not self._bb_backed_up) and self.breadboard_path.exists():
+            try:
+                self.breadboard_backup_path.write_bytes(self.breadboard_path.read_bytes())
+                self._bb_backed_up = True
+            except OSError:
+                pass
         _write_json(self.breadboard_path, data)
         self.breadboard = data
         self.breadboard_error = None
         self._bb_mtime = self.breadboard_path.stat().st_mtime
+        self.version += 1
+
+    def breadboard_fingerprint(self) -> str:
+        plan = {k: v for k, v in (self.breadboard or {}).items() if k != HUMAN_EDIT}
+        payload = json.dumps(plan, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+    def mark_breadboard_reviewed(self) -> dict[str, Any]:
+        info = {"at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "plan": self.breadboard_fingerprint()}
+        self.layout["bbReview"] = info
+        self.version += 1
+        return info
+
+    def breadboard_review_state(self) -> dict[str, Any]:
+        info = self.layout.get("bbReview")
+        if not isinstance(info, dict) or self.breadboard is None:
+            return {"reviewed": False, "current": False}
+        return {"reviewed": True, "at": info.get("at", ""),
+                "current": info.get("plan") == self.breadboard_fingerprint()}
 
     def load_layout(self) -> "Project":
         """Load only layout.json (plus auto-placement for the current circuit)."""

@@ -9,7 +9,8 @@
         "R1": {"legs": {"1": "d31", "2": "d35"}},      leads one by one
         "ANT1": {"offboard": true, "legs": {"1": "a33"}}
       },
-      "wires": [{"from": "j30", "to": "T+30", "color": "red"}]
+      "wires": [{"from": "j30", "to": "T+30", "color": "red"}],
+      "edited_by_human": "2026-09-30T18:00:00+02:00"      set by the editor
     }
 
 Holes are named like on the board: a1…j63 for the terminal strips, and
@@ -40,6 +41,9 @@ ROW_Y = {"j": 0, "i": 1, "h": 2, "g": 3, "f": 4,
          "e": 7, "d": 8, "c": 9, "b": 10, "a": 11}
 Y_ROW = {y: r for r, y in ROW_Y.items()}
 RAILS = ("T+", "T-", "B-", "B+")
+# Top to bottom — moving a leaded part by "one row" steps through this list.
+ROW_ORDER = ["T+", "T-", "j", "i", "h", "g", "f", "e", "d", "c", "b", "a", "B-", "B+"]
+HUMAN_EDIT = "edited_by_human"   # set once the human changed the plan in the editor
 _RAIL_TEXT = {"T+": "top + rail", "T-": "top − rail",
               "B-": "bottom − rail", "B+": "bottom + rail"}
 
@@ -115,6 +119,7 @@ class Wire:
     a: Hole
     b: Hole
     color: str | None = None
+    index: int = 0          # position in the plan's "wires" list
 
 
 class _UnionFind:
@@ -352,7 +357,7 @@ class Breadboard:
             self._add(STRUCTURE, f"Wire {i}: color must be a name or #hex, "
                                  f"got {color!r}")
             color = None
-        self.wires.append(Wire(a, b, color))
+        self.wires.append(Wire(a, b, color, i - 1))
 
     def _bad_hole(self, what: str, value: Any, terminal: bool = False) -> str:
         where = ("a terminal hole a1…j" if terminal
@@ -486,6 +491,42 @@ class Breadboard:
                 self._add(UNPLACED, f"{cid}: " + ", ".join(
                     f"{n} (net {self.net_of[f'{cid}.{n}']})" for n in loose)
                     + " not plugged in anywhere")
+
+    # ── for the editor ───────────────────────────────────────────────────────
+
+    def used_holes(self) -> dict[str, dict[str, Any]]:
+        """Who sits in which hole — the editor refuses drops onto these."""
+        used: dict[str, dict[str, Any]] = {}
+        for part in self.parts.values():
+            for p in part.pins:
+                pin = p.ref.split(".", 1)[1] if p.ref else None
+                used[p.hole.name] = {"part": part.cid, "pin": pin}
+        for w in self.wires:
+            used.setdefault(w.a.name, {"wire": w.index, "end": "from"})
+            used.setdefault(w.b.name, {"wire": w.index, "end": "to"})
+        return used
+
+    def unplaced(self) -> list[dict[str, Any]]:
+        """Physical parts the plan does not place (yet), with what the editor
+        needs to put them on the board — or why it cannot."""
+        out = []
+        for cid, spec in self._specs.items():
+            ctype = str(spec.get("type", "")).lower()
+            if cid in self.parts or not is_physical(ctype):
+                continue
+            comp = self._comps[cid]
+            fp, errors = footprint(spec, comp)
+            entry: dict[str, Any] = {
+                "id": cid, "type": ctype, "value": str(spec.get("value", "") or ""),
+                "pins": [p.name for p in comp.pins], "kind": LEGS,
+                "reason": errors[0] if errors else None,
+            }
+            if fp is not None and fp.kind == RIGID:
+                entry["kind"] = RIGID
+                entry["package"] = fp.package
+                entry["offsets"] = {str(n): list(o) for n, o in fp.offsets.items()}
+            out.append(entry)
+        return out
 
     # ── summary ──────────────────────────────────────────────────────────────
 

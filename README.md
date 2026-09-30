@@ -15,7 +15,7 @@ keeps those two jobs in separate files, so neither side overwrites the other.
 |------|----------|----------|
 | `<name>.circuit.json` | components, nets, notes, no-connects | the assistant |
 | `<name>.layout.json` | positions, rotation, wires and their waypoints, note boxes | you |
-| `<name>.breadboard.json` | optional: which lead goes into which breadboard hole | the assistant (for now) |
+| `<name>.breadboard.json` | optional: which lead goes into which breadboard hole | the assistant writes it, you rearrange it |
 
 The assistant can rewrite the circuit at any time and your arrangement survives:
 components are matched by ID, so anything already placed stays where you put it,
@@ -79,8 +79,8 @@ currently running.
 ```
 
 Tools: `list_projects`, `list_component_types`, `get_circuit`, `write_circuit`,
-`update_circuit`, `get_breadboard`, `write_breadboard`, `open_editor`,
-`review_project`.
+`update_circuit`, `get_breadboard`, `write_breadboard`, `update_breadboard`,
+`open_editor`, `review_project`.
 
 `update_circuit` edits an existing netlist in place — add, replace or remove
 parts, nets and notes, connect or disconnect pins, mark pins as no-connect — so
@@ -235,6 +235,29 @@ ringed on the board, listed at the bottom right and counted on the
 **Breadboard** button. Point at any hole, lead or wire and everything
 electrically connected to it lights up, with its net and pins in the status
 bar. **Export SVG** writes `<name>.breadboard.svg` while this view is shown.
+
+### Rearranging the board
+
+| Action | How |
+|--------|-----|
+| Move a part | drag it — it snaps to the holes; the preview is green where it fits and red where a hole is taken or a chip would miss the channel |
+| Re-plug one lead | drag the lead (bendable parts, off-board leads) |
+| Turn around | `R` — a chip's notch to the other side, a polarised part's leads swapped |
+| New wire | drag from a free hole to another |
+| Move a wire end | drag the end |
+| Remove | select, `Del` — a wire is gone, a part goes back to the tray |
+| Place a missing part | drag it from the tray at the top left onto a hole |
+| Undo / redo | `Ctrl+Z` / `Ctrl+Y` |
+| Pan / zoom | drag on empty space, space or middle-drag / mouse wheel |
+| Finish | **Hand back ✓** — a picture of the board for the assistant, separate from the schematic's |
+
+The check runs after every change, so a short shows up the moment it is
+plugged. Once you have changed the plan it is yours: `write_breadboard` then
+refuses to replace it, and the assistant works on it with `update_breadboard`
+(place or move parts, unplug them, add or remove wires) instead. Only if you
+agree to start over does it pass `replace=true`. The plan as it was before the
+first change of a session, and before any replacement, is kept in
+`<name>.breadboard.bak.json`.
 
 ```json
 {

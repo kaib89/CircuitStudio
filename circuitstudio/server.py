@@ -11,11 +11,13 @@ import binascii
 import json
 import threading
 import webbrowser
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 from .bb_scene import BreadboardScene
+from .breadboard import HUMAN_EDIT
 from .document import Project, is_safe_name, list_projects
 from .scene import Scene
 
@@ -80,6 +82,7 @@ class AppState:
             "review": self.project.review_state(),
             "mode": self.project.layout.get("mode", "schematic"),
             "bbView": self.project.layout.get("bbView"),
+            "bbReview": self.project.breadboard_review_state(),
             "breadboard": self.breadboard_payload(),
         }
 
@@ -197,6 +200,21 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(body.get("showNetNames"), bool):
                     proj.layout["showNetNames"] = body["showNetNames"]
                 proj.save_layout()
+                payload = self.state.scene_payload()
+            self._json(payload)
+            return
+
+        if path == "/api/breadboard":
+            # The editor sends the whole plan after every change; undo is just
+            # sending an older one. From now on the plan carries the human's
+            # work, which tells the assistant not to overwrite it wholesale.
+            plan = body.get("plan") if isinstance(body, dict) else None
+            if not isinstance(plan, dict):
+                self._error(400, "expected {plan}")
+                return
+            plan[HUMAN_EDIT] = datetime.now().astimezone().isoformat(timespec="seconds")
+            with self.state.lock:
+                self.state.project.save_breadboard(plan)
                 payload = self.state.scene_payload()
             self._json(payload)
             return
@@ -329,7 +347,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/svg":
+            what = body.get("what") if isinstance(body, dict) else None
             with self.state.lock:
+                proj = self.state.project
+                if what == "breadboard" and proj.breadboard is not None:
+                    self._json({"svg": BreadboardScene(proj).to_svg()})
+                    return
                 svg = Scene(self.state.project).to_svg()
                 self.state.project.save_routes()
             self._json({"svg": svg})
@@ -350,8 +373,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not data.startswith(PNG_MAGIC):
                     self._error(400, "png payload is not a PNG")
                     return
+            what = body.get("what") if isinstance(body, dict) else None
             with self.state.lock:
                 proj = self.state.project
+                if what == "breadboard":
+                    if proj.breadboard is None:
+                        self._error(409, "this project has no breadboard plan yet")
+                        return
+                    proj.breadboard_svg_path.write_text(
+                        BreadboardScene(proj).to_svg(), encoding="utf-8")
+                    if data:
+                        proj.breadboard_png_path.write_bytes(data)
+                    info = proj.mark_breadboard_reviewed()
+                    proj.save_layout()
+                    payload = self.state.scene_payload()
+                    payload["reviewedAt"] = info["at"]
+                    self._json(payload)
+                    return
                 proj.svg_path.write_text(Scene(proj).to_svg(), encoding="utf-8")
                 if data:
                     proj.png_path.write_bytes(data)

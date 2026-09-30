@@ -289,7 +289,7 @@ body:not(.bb) .bb-only { display: none !important; }
   display: block;
   background: #ffffff;
   touch-action: none;
-  cursor: grab;
+  cursor: default;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -337,6 +337,50 @@ body:not(.bb) .bb-only { display: none !important; }
   border-radius: 4px;
   pointer-events: none;
 }
+
+/* Breadboard editing */
+#bbCanvas g.bbpart { cursor: move; }
+#bbCanvas .pad.lead, #bbCanvas .wend { cursor: grab; }
+#bbCanvas g.bbwire { cursor: pointer; }
+#bbCanvas g.bbpart.sel { filter: drop-shadow(0 0 2.5px #2f81f7) drop-shadow(0 0 1px #2f81f7); }
+#bbCanvas g.bbwire.sel path.wire { stroke-width: 5.5; }
+#bbCanvas g.bbwire.sel { filter: drop-shadow(0 0 2px #2f81f7); }
+#bbCanvas .dragging { opacity: .75; }
+#bbGhost, #bbCanvas #bb_labels { pointer-events: none; }
+#bbGhost .ghost-pad { fill: #2f9e44; fill-opacity: .55; stroke: #1e7a33; stroke-width: 1.5; }
+#bbGhost .ghost-pad.bad { fill: #d94f4f; stroke: #a83232; }
+#bbGhost .ghost-line { stroke: #2f9e44; stroke-width: 3; stroke-dasharray: 6 4; stroke-linecap: round; }
+#bbGhost .ghost-line.bad { stroke: #d94f4f; }
+body.tray-dragging, body.tray-dragging * { cursor: copy !important; }
+
+#bbTray {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  max-width: 30ch;
+  max-height: 55%;
+  overflow: auto;
+  background: #ffffff;
+  border: 1px solid #d3dae2;
+  border-radius: 6px;
+  padding: 6px;
+  font-size: 12.5px;
+  user-select: none;
+}
+#bbTray .tray-head { color: #55636f; margin: 2px 4px 6px; }
+#bbTray .tray-item {
+  padding: 4px 8px;
+  margin: 2px 0;
+  border: 1px solid #c3ccd6;
+  border-radius: 4px;
+  background: #f7f9fb;
+  cursor: grab;
+  font-weight: 600;
+}
+#bbTray .tray-item:hover { background: #e9eff5; border-color: #9fb2c4; }
+#bbTray .tray-item.disabled { cursor: not-allowed; color: #a8b3bd; font-weight: normal; }
+#bbTray .tray-value { font-weight: normal; color: #6b7885; margin-left: 6px; }
+#bbTray .tray-note { color: #7a5312; margin: 2px 4px; }
 
 /* Narrower windows: the toolbar must never wrap (see #toolbar), so it gets
    denser instead of losing controls off the right edge. */

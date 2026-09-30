@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import footprints
-from .breadboard import Breadboard
+from .breadboard import HUMAN_EDIT, Breadboard, parse_hole
 from .document import Project, is_safe_name, list_projects
 from .erc import check as erc_check, format_report
 from .registry import CONFIGURABLE_TYPES, KNOWN_TYPES, build_component
@@ -326,15 +326,66 @@ TOOLS: list[dict[str, Any]] = [
             "a DIP that does not fit) is NOT written. Parts with fixed pin "
             "spacing need 'package'/'pinout' in the circuit first (see "
             "list_component_types). GND/VCC/label symbols are not parts: "
-            "bring their nets to the rails with wires."
+            "bring their nets to the rails with wires. Once the human has "
+            "rearranged the plan in the editor it is theirs: this tool then "
+            "refuses, and changes go through update_breadboard (or, only if "
+            "the human agrees to lose their arrangement, replace=true)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "project": {"type": "string"},
                 "breadboard": BREADBOARD_SCHEMA,
+                "replace": {
+                    "type": "boolean",
+                    "description": "Overwrite a plan the human has edited. Ask "
+                                   "them first — their arrangement is lost "
+                                   "(a backup is kept).",
+                },
             },
             "required": ["project", "breadboard"],
+        },
+    },
+    {
+        "name": "update_breadboard",
+        "description": (
+            "Change part of an existing breadboard plan and keep the rest — "
+            "the way to work on a plan the human has already arranged. Place "
+            "or move parts, unplug them, add or remove wires. Checked like "
+            "write_breadboard: a change that breaks the plan itself (unknown "
+            "hole, two leads in one hole, …) is not written; connection "
+            "problems are reported."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "changes": {
+                    "type": "object",
+                    "properties": {
+                        "place": {
+                            "type": "object",
+                            "description": "{part ID: placement} — added, or "
+                                           "replacing where the part was. Same "
+                                           "format as in write_breadboard.",
+                        },
+                        "remove_parts": {**_REFS, "description":
+                                         "Part IDs to take off the board."},
+                        "add_wires": {
+                            "type": "array",
+                            "items": BREADBOARD_SCHEMA["properties"]["wires"]["items"],
+                        },
+                        "remove_wires": {
+                            "type": "array",
+                            "description": "Wires to pull: {\"from\", \"to\"} "
+                                           "(either direction), or a hole name — "
+                                           "every wire ending there.",
+                        },
+                        "board": BREADBOARD_SCHEMA["properties"]["board"],
+                    },
+                },
+            },
+            "required": ["project", "changes"],
         },
     },
     {
@@ -803,17 +854,111 @@ def tool_write_breadboard(args: dict[str, Any]) -> str:
     if not project.circuit_path.exists():
         return f"Project '{name}' does not exist yet — write the circuit first."
     project.load()
+    current = project.breadboard or {}
+    if current.get(HUMAN_EDIT) and not args.get("replace"):
+        return (f"NOT written — the human rearranged this breadboard in the editor "
+                f"({current[HUMAN_EDIT]}), and a new plan would throw that away. "
+                f"Use update_breadboard for targeted changes (get_breadboard shows "
+                f"the current state). Only if the human explicitly wants to start "
+                f"over, call write_breadboard again with replace=true.")
+    plan = {k: v for k, v in plan.items() if k != HUMAN_EDIT}
     bb = Breadboard(plan, project.circuit)
     if bb.structure_errors:
         return ("NOT written — please fix:\n"
                 + "\n".join(f"- {e}" for e in bb.structure_errors))
-    project.save_breadboard(plan)
+    project.save_breadboard(plan, backup=True)
     return "\n".join([
         f"Written: {project.breadboard_path}",
         bb.report(),
         "",
         "The human sees it in the editor's 'Breadboard' view (open_editor).",
     ])
+
+
+def apply_breadboard_changes(plan: dict[str, Any],
+                             changes: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Patched copy of a breadboard plan plus a change log."""
+    plan = json.loads(json.dumps(plan))
+    parts = plan.get("parts")
+    parts = dict(parts) if isinstance(parts, dict) else {}
+    wires = [w for w in plan.get("wires") or [] if isinstance(w, dict)]
+    log: list[str] = []
+
+    board = changes.get("board")
+    if isinstance(board, dict):
+        merged = dict(plan.get("board") or {})
+        merged.update(board)
+        plan["board"] = merged
+        log.append(f"board: {', '.join(f'{k}={v}' for k, v in board.items())}")
+
+    for cid in _strs(changes, "remove_parts"):
+        if parts.pop(cid, None) is None:
+            log.append(f"{cid}: was not on the board")
+        else:
+            log.append(f"unplugged {cid}")
+
+    place = changes.get("place") or {}
+    if not isinstance(place, dict):
+        raise ValueError("'place' must be an object {part ID: placement}.")
+    for cid, entry in place.items():
+        log.append(f"{'moved' if cid in parts else 'placed'} {cid}")
+        parts[str(cid)] = entry
+
+    def norm(h: Any) -> str:
+        hole = parse_hole(h, 999)
+        return hole.name if hole else str(h)
+
+    removals = changes.get("remove_wires") or []
+    if not isinstance(removals, list):
+        raise ValueError("'remove_wires' must be a list.")
+    for item in removals:
+        before = len(wires)
+        if isinstance(item, dict):
+            ends = {norm(item.get("from")), norm(item.get("to"))}
+            wires = [w for w in wires if {norm(w.get("from")), norm(w.get("to"))} != ends]
+            what = f"wire {item.get('from')} – {item.get('to')}"
+        else:
+            hole = norm(item)
+            wires = [w for w in wires if hole not in (norm(w.get("from")), norm(w.get("to")))]
+            what = f"wires at {item}"
+        log.append(f"removed {what}" if len(wires) < before else f"{what}: none found")
+
+    for w in _objs(changes, "add_wires"):
+        wires.append(w)
+        log.append(f"added wire {w.get('from')} – {w.get('to')}")
+
+    plan["parts"] = parts
+    plan["wires"] = wires
+    return plan, log
+
+
+def tool_update_breadboard(args: dict[str, Any]) -> str:
+    name = _require_name(args)
+    changes = args.get("changes")
+    if not isinstance(changes, dict):
+        raise ValueError("'changes' must be an object.")
+    project = Project(PROJECTS_DIR, name)
+    if not project.circuit_path.exists():
+        return f"Project '{name}' does not exist yet — write the circuit first."
+    project.load()
+    if project.breadboard is None:
+        return (project.breadboard_error or
+                f"Project '{name}' has no breadboard plan yet — write one with "
+                f"write_breadboard.")
+    before = set(Breadboard(project.breadboard, project.circuit).structure_errors)
+    plan, log = apply_breadboard_changes(project.breadboard, changes)
+    if not log:
+        return "No changes given — nothing written."
+    bb = Breadboard(plan, project.circuit)
+    new = [e for e in bb.structure_errors if e not in before]
+    if new:
+        return ("NOT written — the change would break the plan:\n"
+                + "\n".join(f"- {e}" for e in new)
+                + "\n\nChanges that were attempted:\n"
+                + "\n".join(f"- {l}" for l in log))
+    project.save_breadboard(plan)
+    return "\n".join(["Changes:"] + [f"- {l}" for l in log] + [
+        f"Written: {project.breadboard_path}", bb.report()])
 
 
 def _open_browser(url: str) -> None:
@@ -871,10 +1016,7 @@ def tool_review_project(args: dict[str, Any]) -> list[dict[str, Any]]:
     # scene.erc also knows the arrangement, e.g. a GND symbol left hanging.
     lines.append(format_report(scene.erc))
     lines.append("")
-    if project.breadboard is not None or project.breadboard_error:
-        lines.append(project.breadboard_error or
-                     Breadboard(project.breadboard, project.circuit).report())
-        lines.append("")
+    bb_blocks = _breadboard_review(project)
 
     if not state["reviewed"]:
         lines.append(
@@ -882,7 +1024,7 @@ def tool_review_project(args: dict[str, Any]) -> list[dict[str, Any]]:
             "picture. What the auto-placement produced is not worth looking at — "
             "it only exists so they have something to drag around. Ask them to "
             "press 'Hand back' in the editor when the layout is ready.")
-        return [_text("\n".join(lines))]
+        return [_text("\n".join(lines))] + bb_blocks
 
     if state["current"]:
         lines.append(f"Handed back {state['at']} — the picture below is the "
@@ -906,7 +1048,38 @@ def tool_review_project(args: dict[str, Any]) -> list[dict[str, Any]]:
     else:
         out.append(_text(f"(No picture file — the browser could not rasterise "
                          f"the drawing. The SVG is at {project.svg_path}.)"))
-    return out
+    return out + bb_blocks
+
+
+def _image(path: Path) -> dict[str, Any]:
+    data = path.read_bytes()
+    if len(data) > MAX_IMAGE_BYTES:
+        return _text(f"(The picture is {len(data) // 1024} KB, too large to "
+                     f"inline. It is at {path}.)")
+    return {"type": "image", "data": base64.b64encode(data).decode("ascii"),
+            "mimeType": "image/png"}
+
+
+def _breadboard_review(project: Project) -> list[dict[str, Any]]:
+    """The breadboard check, plus the human's picture of it if handed back."""
+    if project.breadboard is None and not project.breadboard_error:
+        return []
+    if project.breadboard is None:
+        return [_text(str(project.breadboard_error))]
+    lines = [Breadboard(project.breadboard, project.circuit).report()]
+    if project.breadboard.get(HUMAN_EDIT):
+        lines.append(f"The human last changed the plan in the editor at "
+                     f"{project.breadboard[HUMAN_EDIT]} — change it with "
+                     f"update_breadboard, not write_breadboard.")
+    state = project.breadboard_review_state()
+    png = project.breadboard_png_path
+    if not state["reviewed"] or not png.exists():
+        return [_text("\n".join(lines))]
+    lines.append(f"Breadboard handed back {state['at']}"
+                 + (" — the picture below is the plan as it stands."
+                    if state["current"] else
+                    ", but it has been changed since; the picture is older."))
+    return [_text("\n".join(lines)), _image(png)]
 
 
 def _text(text: str) -> dict[str, Any]:
@@ -921,6 +1094,7 @@ HANDLERS = {
     "update_circuit": tool_update_circuit,
     "get_breadboard": tool_get_breadboard,
     "write_breadboard": tool_write_breadboard,
+    "update_breadboard": tool_update_breadboard,
     "open_editor": tool_open_editor,
     "review_project": tool_review_project,
 }

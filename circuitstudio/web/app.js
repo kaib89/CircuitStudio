@@ -462,6 +462,7 @@ function applyPayload(payload) {
   chkNetNames.checked = payload.showNetNames !== false;
   gridRectEl.style.display = chkGrid.checked ? '' : 'none';
   review = payload.review || { reviewed: false, current: false };
+  bbReview = payload.bbReview || { reviewed: false, current: false };
   updateHandBack();
   document.title = `${scene.title} — CircuitStudio`;
 
@@ -889,9 +890,9 @@ canvas.addEventListener('wheel', evt => {
 document.addEventListener('keydown', async evt => {
   if (evt.target.tagName === 'SELECT' || evt.target.tagName === 'INPUT') return;
   if (mode === 'breadboard') {
-    // Nothing to edit here yet; the schematic shortcuts would act on parts
-    // that are not even visible.
-    if (!evt.ctrlKey && !evt.metaKey && evt.key.toLowerCase() === 'f') fitBb();
+    // Its own shortcuts: the schematic's would act on parts that are not
+    // even visible.
+    await bbKeydown(evt);
     return;
   }
   if (evt.code === 'Space') {
@@ -1109,23 +1110,29 @@ function svgToPng(svgText) {
   });
 }
 
+/** The button reflects the view that is shown: schematic and breadboard are
+ *  handed back separately. */
 function updateHandBack() {
   if (!btnHandBack) return;
-  btnHandBack.classList.toggle('done', !!(review.reviewed && review.current));
-  btnHandBack.classList.toggle('stale', !!(review.reviewed && !review.current));
-  btnHandBack.title = !review.reviewed
-    ? 'Mark the arrangement as finished and render a picture the assistant can look at'
-    : review.current
-      ? `Handed back ${review.at} — the assistant can see this arrangement`
-      : `Handed back ${review.at}, but the layout has changed since. Click again.`;
+  const r = mode === 'breadboard' ? bbReview : review;
+  const what = mode === 'breadboard' ? 'breadboard' : 'arrangement';
+  btnHandBack.disabled = mode === 'breadboard' && !(bb && bb.exists);
+  btnHandBack.classList.toggle('done', !!(r.reviewed && r.current));
+  btnHandBack.classList.toggle('stale', !!(r.reviewed && !r.current));
+  btnHandBack.title = !r.reviewed
+    ? `Mark the ${what} as finished and render a picture the assistant can look at`
+    : r.current
+      ? `Handed back ${r.at} — the assistant can see this ${what}`
+      : `Handed back ${r.at}, but the ${what} has changed since. Click again.`;
 }
 
 btnHandBack.addEventListener('click', async () => {
+  const what = mode === 'breadboard' ? { what: 'breadboard' } : {};
   btnHandBack.disabled = true;
   setStatus('Rendering the picture…');
   let png = null;
   try {
-    const { svg } = await api('/api/svg', {});
+    const { svg } = await api('/api/svg', what);
     png = await svgToPng(svg);
   } catch (err) {
     // Still worth recording the sign-off; the assistant then gets the numbers
@@ -1133,13 +1140,14 @@ btnHandBack.addEventListener('click', async () => {
     setStatus('Could not render a picture (' + err.message + ') — handing back the SVG only.');
   }
   try {
-    const payload = await api('/api/review', png ? { png } : {});
+    const payload = await api('/api/review', png ? { png, ...what } : what);
     applyPayload(payload);
     setStatus(`Handed back${png ? ' with a picture' : ''} — the assistant can review it now.`);
   } catch (err) {
     setStatus('Error: ' + err.message);
   } finally {
     btnHandBack.disabled = false;
+    updateHandBack();
   }
 });
 
@@ -1179,9 +1187,11 @@ chkGrid.addEventListener('change', async () => {
 
 // ── breadboard view ────────────────────────────────────────────────────────
 //
-// Read-only for now: the assistant writes the plan, the server draws it and
-// checks it against the netlist. The editor adds pan/zoom and lights up an
-// electrical node — every hole, lead and wire carries its node in data-node.
+// The server draws the plan and checks it against the netlist; the editor
+// moves things around. Every change edits a copy of the plan and sends the
+// whole plan back — undo is simply sending an older one. Holes, leads and
+// wires carry their electrical node in data-node, so pointing at one lights
+// up everything connected to it.
 
 const BB_KINDS = {
   short: 'short(s) — nets that must stay apart meet',
@@ -1189,6 +1199,121 @@ const BB_KINDS = {
   stray: 'unused pin(s) sitting in a live column',
   unplaced: 'not plugged in yet',
 };
+// Lead spacing a new part gets when it comes off the tray, in columns.
+const BB_SPAN = { resistor: 4, inductor: 4, diode: 4, zener: 4, fuse: 4,
+                  capacitor: 2, capacitor_pol: 2, crystal: 2, switch: 2, led: 1 };
+// Parts that do not sit on a breadboard; only their leads end in a hole.
+const BB_OFFBOARD = new Set(['speaker', 'battery', 'source_dc', 'source_ac',
+                             'connector', 'esp32', 'rpi', 'arduino_uno', 'arduino_nano']);
+const bbTray = document.getElementById('bbTray');
+const bbGhost = document.getElementById('bbGhost');
+const bbUndo = [];
+const bbRedo = [];
+let bbSel = null;           // { part: id } or { wire: index }
+let bbDrag = null;
+let bbReview = { reviewed: false, current: false };
+
+// ── geometry ─────────────────────────────────────────────────────────────
+
+function bbGeo() { return bb.geometry; }
+
+function parseHole(name) {
+  const m = /^([a-j])(\d+)$/.exec(name) || /^([TB][+-])(\d+)$/.exec(name);
+  return m ? { row: m[1], col: parseInt(m[2], 10) } : null;
+}
+
+function isRail(row) { return row in bbGeo().railY; }
+
+function holeXY(name) {
+  const g = bbGeo(), h = parseHole(name);
+  const y = isRail(h.row) ? g.railY[h.row] : g.rowY[h.row];
+  return { x: h.col * g.pitch, y: y * g.pitch };
+}
+
+/** The hole under a point, if the point is reasonably close to one. */
+function nearestHole(x, y, terminalOnly = false) {
+  const g = bbGeo(), P = g.pitch;
+  const col = Math.round(x / P);
+  if (col < 1 || col > g.columns || Math.abs(col * P - x) > P * 0.8) return null;
+  let best = null, bd = Infinity;
+  for (const row of g.rowOrder) {
+    if (terminalOnly && isRail(row)) continue;
+    const d = Math.abs((isRail(row) ? g.railY[row] : g.rowY[row]) * P - y);
+    if (d < bd) { bd = d; best = row; }
+  }
+  return bd <= P * 0.8 ? best + col : null;
+}
+
+function rotOffset(dx, dy, r) {
+  for (let i = 0; i < r / 90; i++) [dx, dy] = [-dy, dx];
+  return [dx, dy];
+}
+
+/** Holes of a rigid part with pin 1 at `anchor`, or null if it does not fit. */
+function rigidHoles(offsets, anchor, rotation) {
+  const g = bbGeo(), a = anchor && parseHole(anchor);
+  if (!a || isRail(a.row)) return null;
+  const rowAt = {};
+  for (const [r, y] of Object.entries(g.rowY)) rowAt[y] = r;
+  const out = {};
+  for (const [num, [dx, dy]] of Object.entries(offsets)) {
+    const [rx, ry] = rotOffset(dx, dy, rotation);
+    const row = rowAt[g.rowY[a.row] + ry], col = a.col + rx;
+    if (!row || col < 1 || col > g.columns) return null;
+    out[num] = row + col;
+  }
+  return out;
+}
+
+/** A hole moved by whole columns and rows (rails count as rows). */
+function shiftHole(name, dcol, drow) {
+  const g = bbGeo(), h = parseHole(name);
+  if (!h) return null;
+  const i = g.rowOrder.indexOf(h.row) + drow, col = h.col + dcol;
+  if (i < 0 || i >= g.rowOrder.length || col < 1 || col > g.columns) return null;
+  return g.rowOrder[i] + col;
+}
+
+function rowIndex(name) { return bbGeo().rowOrder.indexOf(parseHole(name).row); }
+
+/** Free, or taken only by what is being moved. */
+function holeFree(name, mine = () => false) {
+  const u = bb.used[name];
+  return !u || mine(u);
+}
+
+// ── plan editing + undo ──────────────────────────────────────────────────
+
+function planCopy() {
+  const p = JSON.parse(JSON.stringify(bb.plan || {}));
+  if (!p.parts || typeof p.parts !== 'object') p.parts = {};
+  if (!Array.isArray(p.wires)) p.wires = [];
+  return p;
+}
+
+async function sendPlan(plan, msg) {
+  try {
+    applyPayload(await api('/api/breadboard', { plan }));
+    if (msg) setStatus(msg);
+  } catch (err) { setStatus('Error: ' + err.message); }
+}
+
+async function commitPlan(plan, msg) {
+  bbUndo.push(JSON.stringify(bb.plan));
+  if (bbUndo.length > HISTORY_MAX) bbUndo.shift();
+  bbRedo.length = 0;
+  await sendPlan(plan, msg);
+}
+
+async function bbTravel(from, to, verb) {
+  const s = from.pop();
+  if (!s) { setStatus(`Nothing to ${verb}.`); return; }
+  to.push(JSON.stringify(bb.plan));
+  await sendPlan(JSON.parse(s), `${verb === 'undo' ? 'Undone' : 'Redone'} — ` +
+                 `${bbUndo.length} undo / ${bbRedo.length} redo step(s) left.`);
+}
+
+// ── view ─────────────────────────────────────────────────────────────────
 
 function bbMetrics() {
   const rect = bbCanvas.getBoundingClientRect();
@@ -1234,6 +1359,8 @@ function fitBb() {
   scheduleBbViewSave();
 }
 
+// ── rendering ────────────────────────────────────────────────────────────
+
 function bbProblems() {
   return ((bb && bb.findings) || []).filter(f => f.kind !== 'unplaced');
 }
@@ -1261,11 +1388,12 @@ function renderBbBoxes() {
   errorsBox.hidden = !structure.length;
   if (structure.length) {
     errorsBox.textContent =
-      `The plan itself has ${structure.length} problem(s) — tell the assistant:\n` +
+      `The plan itself has ${structure.length} problem(s):\n` +
       structure.map(f => '· ' + f.message).join('\n');
   }
   const parts = [];
   for (const [kind, text] of Object.entries(BB_KINDS)) {
+    if (kind === 'unplaced') continue;    // the tray shows those
     const list = findings.filter(f => f.kind === kind);
     if (list.length) {
       parts.push(`${list.length} ${text}:\n` + list.map(f => '· ' + f.message).join('\n'));
@@ -1276,12 +1404,52 @@ function renderBbBoxes() {
   setStatus(bbDefaultStatus());
 }
 
+/** Parts the plan does not place yet — drag them onto the board. */
+function renderTray() {
+  const list = (bb && bb.exists && bb.unplaced) || [];
+  const loose = ((bb && bb.findings) || [])
+    .filter(f => f.kind === 'unplaced' && !/is not on the breadboard/.test(f.message));
+  bbTray.hidden = !list.length && !loose.length;
+  let html = '';
+  if (list.length) {
+    html += `<div class="tray-head">Not on the board (${list.length}) — drag onto a hole</div>`;
+    for (const p of list) {
+      const label = `${escapeHtml(p.id)}<span class="tray-value">` +
+                    `${escapeHtml(p.value || p.type)}</span>`;
+      html += p.reason
+        ? `<div class="tray-item disabled" title="${escapeHtml(p.reason)}">${label}</div>`
+        : `<div class="tray-item" data-id="${escapeHtml(p.id)}" ` +
+          `title="${escapeHtml(p.package || p.type)}">${label}</div>`;
+    }
+  }
+  if (loose.length) {
+    html += '<div class="tray-head">Leads not plugged in</div>' +
+            loose.map(f => `<div class="tray-note">${escapeHtml(f.message)}</div>`).join('');
+  }
+  bbTray.innerHTML = html;
+}
+
+function bbApplySelection() {
+  for (const el of bbContent.querySelectorAll('.sel')) el.classList.remove('sel');
+  if (!bbSel) return;
+  const sel = bbSel.part !== undefined
+    ? `g.bbpart[data-part="${CSS.escape(bbSel.part)}"]`
+    : `g.bbwire[data-wire="${bbSel.wire}"]`;
+  for (const el of bbContent.querySelectorAll(sel)) el.classList.add('sel');
+}
+
+function bbSelect(sel) {
+  bbSel = sel;
+  bbApplySelection();
+}
+
 function renderBreadboard() {
   const n = bbProblems().length;
   btnModeBb.innerHTML = 'Breadboard' + (n ? `<span class="badge">${n}</span>` : '');
   btnModeBb.title = !bb || !bb.exists
     ? 'No breadboard plan yet — the assistant writes one with write_breadboard'
     : n ? `${n} problem(s) on the breadboard` : 'The breadboard plan matches the schematic';
+  renderTray();
 
   if (!bb || !bb.exists) {
     bbContent.innerHTML = '';
@@ -1295,11 +1463,22 @@ function renderBreadboard() {
     bbHover = null;
     bbCanvas.classList.remove('focus');
   }
+  if (bbSel && bbSel.part !== undefined && !(bbSel.part in (bb.parts || {}))) bbSel = null;
+  if (bbSel && bbSel.wire !== undefined && !(bb.plan.wires || [])[bbSel.wire]) bbSel = null;
+  bbApplySelection();
   if (mode === 'breadboard') {
     bbCanvas.style.display = '';
     bbEmpty.hidden = true;
     if (bbView) applyBbView(); else fitBb();
   }
+}
+
+/** Throw away drag previews: redraw from the last server picture. */
+function bbRedraw() {
+  bbContent.innerHTML = bbSvg;
+  bbGhost.innerHTML = '';
+  bbHover = null;
+  bbApplySelection();
 }
 
 function applyMode() {
@@ -1311,6 +1490,7 @@ function applyMode() {
   bbEmpty.hidden = !(isBb && !has);
   btnModeSch.classList.toggle('active', !isBb);
   btnModeBb.classList.toggle('active', isBb);
+  updateHandBack();
   if (isBb) {
     if (has) { if (bbView) applyBbView(); else fitBb(); }
     renderBbBoxes();
@@ -1354,12 +1534,126 @@ function setBbFocus(node) {
             (pins.length > 6 ? ` … (+${pins.length - 6})` : ''));
 }
 
+// ── drag previews ────────────────────────────────────────────────────────
+
+function showGhost(holes, ok, line) {
+  let html = '';
+  if (line) {
+    html += `<line x1="${line[0].x}" y1="${line[0].y}" x2="${line[1].x}" y2="${line[1].y}" ` +
+            `class="ghost-line${ok ? '' : ' bad'}"/>`;
+  }
+  for (const h of holes) {
+    if (!h) continue;
+    const { x, y } = holeXY(h);
+    html += `<circle cx="${x}" cy="${y}" r="5.5" class="ghost-pad${ok ? '' : ' bad'}"/>`;
+  }
+  bbGhost.innerHTML = html;
+}
+
+function moveGroup(selector, dx, dy) {
+  for (const el of bbContent.querySelectorAll(selector)) {
+    el.setAttribute('transform', `translate(${dx},${dy})`);
+    el.classList.add('dragging');
+  }
+}
+
+/** Where a dragged part would land, and whether it may. */
+function partTarget(d, p) {
+  const plan = bb.plan.parts[d.id] || {};
+  const mine = u => u.part === d.id;
+  if (d.rigid) {
+    const o = holeXY(d.anchor);
+    const anchor = nearestHole(o.x + p.x - d.start.x, o.y + p.y - d.start.y, true);
+    const holes = anchor && rigidHoles(d.offsets, anchor, d.rotation);
+    const ok = !!holes && Object.values(holes).every(h => holeFree(h, mine));
+    return { ok, holes: holes ? Object.values(holes) : [], place: { ...plan, anchor },
+             moved: anchor !== d.anchor, dx: anchor ? holeXY(anchor).x - o.x : 0,
+             dy: anchor ? holeXY(anchor).y - o.y : 0 };
+  }
+  const from = nearestHole(d.start.x, d.start.y), to = nearestHole(p.x, p.y);
+  if (!from || !to) return { ok: false, holes: [], moved: false };
+  const dcol = parseHole(to).col - parseHole(from).col;
+  const drow = rowIndex(to) - rowIndex(from);
+  const legs = {};
+  for (const [pin, h] of Object.entries(plan.legs || {})) legs[pin] = shiftHole(h, dcol, drow);
+  const holes = Object.values(legs);
+  const ok = holes.every(h => h && holeFree(h, mine));
+  const first = Object.values(plan.legs || {})[0];
+  const a = first && holeXY(first), b = holes[0] && holeXY(holes[0]);
+  return { ok, holes, place: { ...plan, legs }, moved: dcol !== 0 || drow !== 0,
+           dx: a && b ? b.x - a.x : 0, dy: a && b ? b.y - a.y : 0 };
+}
+
+/** Holes a part from the tray would take with its first lead at `hole`. */
+function trayPlacement(entry, p) {
+  if (entry.kind === 'rigid') {
+    const anchor = nearestHole(p.x, p.y, true);
+    const holes = anchor && rigidHoles(entry.offsets, anchor, 0);
+    return holes ? { holes: Object.values(holes), place: { anchor, rotation: 0 } } : null;
+  }
+  const start = nearestHole(p.x, p.y);
+  if (!start) return null;
+  const n = entry.pins.length;
+  const offboard = BB_OFFBOARD.has(entry.type);
+  const steps = n === 2 && !offboard
+    ? [0, BB_SPAN[entry.type] || 3]
+    : entry.pins.map((_, i) => i);
+  const legs = {};
+  entry.pins.forEach((pin, i) => { legs[pin] = shiftHole(start, steps[i], 0); });
+  if (Object.values(legs).some(h => !h)) return null;
+  return { holes: Object.values(legs),
+           place: offboard ? { offboard: true, legs } : { legs } };
+}
+
+// ── pointer ──────────────────────────────────────────────────────────────
+
 bbCanvas.addEventListener('pointerdown', evt => {
+  if (!bb || !bb.exists) return;
   if (evt.button !== 0 && evt.button !== 1) return;
   evt.preventDefault();
-  bbPan = { sx: evt.clientX, sy: evt.clientY, upp: bbMetrics().upp,
-            view: { ...bbView }, moved: false };
-  bbCanvas.classList.add('panning');
+  setBbFocus(null);
+  const p = bbToUser(evt);
+  const base = { sx: evt.clientX, sy: evt.clientY, start: p, moved: false };
+  const t = evt.button === 0 && !spaceDown ? evt.target : null;
+  const inside = el => (el && bbContent.contains(el) ? el : null);
+  const wend = t && inside(t.closest('.wend'));
+  const lead = t && inside(t.closest('.pad.lead'));
+  const wireEl = t && inside(t.closest('g.bbwire'));
+  const partEl = t && inside(t.closest('g.bbpart'));
+
+  if (wend) {
+    const i = parseInt(wend.dataset.wire, 10), end = wend.dataset.end;
+    bbSelect({ wire: i });
+    bbDrag = { ...base, kind: 'wend', wire: i, end,
+               other: bb.plan.wires[i][end === 'from' ? 'to' : 'from'] };
+  } else if (lead) {
+    const id = lead.dataset.part, pin = lead.dataset.pin;
+    bbSelect({ part: id });
+    bbDrag = { ...base, kind: 'lead', id, pin, el: lead,
+               origin: ((bb.plan.parts[id] || {}).legs || {})[pin] };
+  } else if (wireEl) {
+    bbSelect({ wire: parseInt(wireEl.dataset.wire, 10) });
+  } else if (partEl) {
+    const id = partEl.dataset.part, info = (bb.parts || {})[id];
+    bbSelect({ part: id });
+    if (info && !info.offboard) {
+      bbDrag = { ...base, kind: 'part', id, rigid: info.kind === 'rigid',
+                 anchor: info.anchor, rotation: info.rotation || 0,
+                 offsets: info.offsets };
+    }
+  } else {
+    const hole = t && nearestHole(p.x, p.y);
+    const near = hole && Math.hypot(holeXY(hole).x - p.x, holeXY(hole).y - p.y)
+                         < bbGeo().pitch * 0.45;
+    bbSelect(null);
+    if (near && holeFree(hole)) {
+      bbDrag = { ...base, kind: 'wire', from: hole };
+    } else {
+      bbPan = { sx: evt.clientX, sy: evt.clientY, upp: bbMetrics().upp,
+                view: { ...bbView }, moved: false };
+      bbCanvas.classList.add('panning');
+    }
+  }
   try { bbCanvas.setPointerCapture(evt.pointerId); } catch (e) { /* ignore */ }
 });
 
@@ -1372,18 +1666,82 @@ bbCanvas.addEventListener('pointermove', evt => {
     applyBbView();
     return;
   }
-  const el = evt.target.closest ? evt.target.closest('[data-node]') : null;
-  setBbFocus(el && bbContent.contains(el) ? el.dataset.node : null);
+  if (bbDrag && bbDrag.kind !== 'tray') {
+    const d = bbDrag;
+    if (Math.abs(evt.clientX - d.sx) > 3 || Math.abs(evt.clientY - d.sy) > 3) d.moved = true;
+    if (!d.moved) return;
+    const p = bbToUser(evt);
+    if (d.kind === 'part') {
+      d.target = partTarget(d, p);
+      moveGroup(`g.bbpart[data-part="${CSS.escape(d.id)}"]`, d.target.dx, d.target.dy);
+      showGhost(d.target.holes, d.target.ok);
+    } else if (d.kind === 'lead') {
+      const h = nearestHole(p.x, p.y);
+      d.to = h;
+      d.ok = !!h && holeFree(h, u => u.part === d.id && u.pin === d.pin);
+      if (h) { const q = holeXY(h); d.el.setAttribute('cx', q.x); d.el.setAttribute('cy', q.y); }
+      showGhost([h], d.ok);
+    } else if (d.kind === 'wend' || d.kind === 'wire') {
+      const h = nearestHole(p.x, p.y);
+      const anchor = d.kind === 'wire' ? d.from : d.other;
+      d.to = h;
+      d.ok = !!h && h !== anchor && holeFree(h, u => d.kind === 'wend' &&
+                                                u.wire === d.wire && u.end === d.end);
+      if (d.kind === 'wend') {
+        for (const el of bbContent.querySelectorAll(`g.bbwire[data-wire="${d.wire}"]`)) {
+          el.style.opacity = '0.25';
+        }
+      }
+      showGhost([h], d.ok, [holeXY(anchor), h ? holeXY(h) : p]);
+    }
+    return;
+  }
+  if (!bbDrag) {
+    const el = evt.target.closest ? evt.target.closest('[data-node]') : null;
+    setBbFocus(el && bbContent.contains(el) ? el.dataset.node : null);
+  }
 });
 
-bbCanvas.addEventListener('pointerup', evt => {
+bbCanvas.addEventListener('pointerup', async evt => {
   bbCanvas.classList.remove('panning');
   if (bbCanvas.hasPointerCapture(evt.pointerId)) bbCanvas.releasePointerCapture(evt.pointerId);
-  if (bbPan && bbPan.moved) scheduleBbViewSave();
-  bbPan = null;
+  if (bbPan) {
+    if (bbPan.moved) scheduleBbViewSave();
+    bbPan = null;
+    return;
+  }
+  const d = bbDrag;
+  if (!d || d.kind === 'tray') return;
+  bbDrag = null;
+  if (!d.moved) { bbGhost.innerHTML = ''; return; }
+
+  const plan = planCopy();
+  let msg = null;
+  if (d.kind === 'part' && d.target && d.target.moved && d.target.ok) {
+    plan.parts[d.id] = d.target.place;
+    msg = `${d.id} moved.`;
+  } else if (d.kind === 'lead' && d.ok && d.to && d.to !== d.origin) {
+    plan.parts[d.id].legs[d.pin] = d.to;
+    msg = `${d.id}.${d.pin} now in ${d.to}.`;
+  } else if (d.kind === 'wend' && d.ok) {
+    plan.wires[d.wire][d.end] = d.to;
+    msg = `Wire now ends in ${d.to}.`;
+  } else if (d.kind === 'wire' && d.ok) {
+    plan.wires.push({ from: d.from, to: d.to });
+    bbSel = { wire: plan.wires.length - 1 };
+    msg = `Wire ${d.from} → ${d.to} added.`;
+  }
+  if (!msg) {
+    bbRedraw();
+    const taken = (d.target && !d.target.ok) || d.ok === false;
+    if (taken) setStatus("Doesn't fit there — a hole is taken, or it lands off the strips.");
+    return;
+  }
+  bbGhost.innerHTML = '';
+  await commitPlan(plan, msg);
 });
 
-bbCanvas.addEventListener('pointerleave', () => { if (!bbPan) setBbFocus(null); });
+bbCanvas.addEventListener('pointerleave', () => { if (!bbPan && !bbDrag) setBbFocus(null); });
 
 bbCanvas.addEventListener('wheel', evt => {
   evt.preventDefault();
@@ -1400,10 +1758,125 @@ bbCanvas.addEventListener('wheel', evt => {
   scheduleBbViewSave();
 }, { passive: false });
 
+// Parts come off the tray by drag and drop; the tray lives outside the SVG,
+// so this drag is followed on the document.
+bbTray.addEventListener('pointerdown', evt => {
+  const item = evt.target.closest('.tray-item[data-id]');
+  if (!item || evt.button !== 0) return;
+  const entry = (bb.unplaced || []).find(u => u.id === item.dataset.id);
+  if (!entry) return;
+  evt.preventDefault();
+  bbDrag = { kind: 'tray', entry, target: null };
+  document.body.classList.add('tray-dragging');
+});
+
+document.addEventListener('pointermove', evt => {
+  if (!bbDrag || bbDrag.kind !== 'tray') return;
+  const r = bbCanvas.getBoundingClientRect();
+  const over = evt.clientX >= r.left && evt.clientX <= r.right &&
+               evt.clientY >= r.top && evt.clientY <= r.bottom;
+  const t = over ? trayPlacement(bbDrag.entry, bbToUser(evt)) : null;
+  bbDrag.target = t;
+  bbDrag.ok = !!t && t.holes.every(h => holeFree(h));
+  if (t) showGhost(t.holes, bbDrag.ok); else bbGhost.innerHTML = '';
+});
+
+document.addEventListener('pointerup', async () => {
+  if (!bbDrag || bbDrag.kind !== 'tray') return;
+  const d = bbDrag;
+  bbDrag = null;
+  document.body.classList.remove('tray-dragging');
+  bbGhost.innerHTML = '';
+  if (!d.target) return;
+  if (!d.ok) { setStatus("Doesn't fit there — a hole is taken."); return; }
+  const plan = planCopy();
+  plan.parts[d.entry.id] = d.target.place;
+  bbSel = { part: d.entry.id };
+  await commitPlan(plan, `${d.entry.id} placed.`);
+});
+
+// ── keys ─────────────────────────────────────────────────────────────────
+
+/** Turn the selected part around: a chip's notch to the other side, a
+ *  polarised part's leads swapped. The part keeps its spot. */
+async function bbTurn() {
+  if (!bbSel || bbSel.part === undefined) return;
+  const id = bbSel.part, info = (bb.parts || {})[id];
+  const plan = planCopy(), entry = plan.parts[id];
+  if (!info || !entry) return;
+  const mine = u => u.part === id;
+  if (info.kind === 'rigid') {
+    // Keep the centre of the footprint where it is.
+    const g = bbGeo();
+    const centre = holes => {
+      const pts = holes.map(h => ({ c: parseHole(h).col, y: g.rowY[parseHole(h).row] }));
+      return { c: (Math.min(...pts.map(q => q.c)) + Math.max(...pts.map(q => q.c))) / 2,
+               y: (Math.min(...pts.map(q => q.y)) + Math.max(...pts.map(q => q.y))) / 2 };
+    };
+    const rotation = (info.rotation + 180) % 360;
+    const now = centre(info.holes);
+    const offs = Object.values(info.offsets).map(([dx, dy]) => rotOffset(dx, dy, rotation));
+    const oc = (Math.min(...offs.map(o => o[0])) + Math.max(...offs.map(o => o[0]))) / 2;
+    const oy = (Math.min(...offs.map(o => o[1])) + Math.max(...offs.map(o => o[1]))) / 2;
+    const row = Object.keys(g.rowY).find(r => g.rowY[r] === now.y - oy);
+    const anchor = row ? row + (now.c - oc) : null;
+    const holes = anchor && rigidHoles(info.offsets, anchor, rotation);
+    if (!holes || !Object.values(holes).every(h => holeFree(h, mine))) {
+      setStatus(`${id} can't turn around here.`);
+      return;
+    }
+    plan.parts[id] = { ...entry, anchor, rotation };
+  } else {
+    const pins = Object.keys(entry.legs || {});
+    if (pins.length !== 2) { setStatus(`${id}: only two-lead parts can be turned.`); return; }
+    const [a, b] = pins;
+    entry.legs = { [a]: entry.legs[b], [b]: entry.legs[a] };
+  }
+  await commitPlan(plan, `${id} turned around.`);
+}
+
+async function bbDelete() {
+  if (!bbSel) return;
+  const plan = planCopy();
+  if (bbSel.wire !== undefined) {
+    plan.wires.splice(bbSel.wire, 1);
+    bbSel = null;
+    await commitPlan(plan, 'Wire removed.');
+  } else if (plan.parts[bbSel.part]) {
+    const id = bbSel.part;
+    delete plan.parts[id];
+    bbSel = null;
+    await commitPlan(plan, `${id} unplugged — it is back in the tray.`);
+  }
+}
+
+async function bbKeydown(evt) {
+  if (evt.code === 'Space') { spaceDown = true; evt.preventDefault(); return; }
+  if (!bb || !bb.exists) return;
+  const key = evt.key.toLowerCase();
+  if (evt.ctrlKey || evt.metaKey) {
+    if (key === 'z' && evt.shiftKey || key === 'y') {
+      evt.preventDefault();
+      await bbTravel(bbRedo, bbUndo, 'redo');
+    } else if (key === 'z') {
+      evt.preventDefault();
+      await bbTravel(bbUndo, bbRedo, 'undo');
+    }
+    return;
+  }
+  if (key === 'f') fitBb();
+  else if (key === 'escape') bbSelect(null);
+  else if (key === 'r') await bbTurn();
+  else if (evt.key === 'Delete' || evt.key === 'Backspace') {
+    evt.preventDefault();
+    await bbDelete();
+  }
+}
+
 // ── live reload when the LLM rewrites circuit.json ─────────────────────────
 
 setInterval(async () => {
-  if (drag || pan || wpDrag || wireClick || band || noteDrag || bbPan) return;
+  if (drag || pan || wpDrag || wireClick || band || noteDrag || bbPan || bbDrag) return;
   try {
     const v = await api('/api/version');
     // Another tab may have switched this editor to a different project; its

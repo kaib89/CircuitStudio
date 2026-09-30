@@ -6,8 +6,10 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -263,7 +265,8 @@ class McpBreadboardTests(unittest.TestCase):
         self.assertIn("matches the netlist", text)
         stored = json.loads(mcp_server.tool_get_breadboard({"project": "t"}))
         self.assertEqual(stored, TIMER_PLAN)
-        review = mcp_server.tool_review_project({"project": "t"})[0]["text"]
+        review = "\n".join(b["text"] for b in mcp_server.tool_review_project(
+            {"project": "t"}) if b["type"] == "text")
         self.assertIn("Breadboard:", review)
 
     def test_broken_plan_is_not_written(self) -> None:
@@ -286,6 +289,144 @@ class McpBreadboardTests(unittest.TestCase):
             "remove_nc": ["U1.THR"]}})
         self.assertIn("Breadboard:", text)
         self.assertIn("Open: net 'DIS'", text)
+
+
+class EditorTests(unittest.TestCase):
+    """The editor's side: saving a changed plan, and what it is told."""
+
+    def setUp(self) -> None:
+        from circuitstudio.server import AppState, Handler, _Server
+        self.dir = Path(tempfile.mkdtemp())
+        (self.dir / "t.circuit.json").write_text(json.dumps(TIMER), encoding="utf-8")
+        (self.dir / "t.breadboard.json").write_text(json.dumps(TIMER_PLAN),
+                                                    encoding="utf-8")
+        Handler.state = AppState(self.dir, "t")
+        self.httpd = _Server(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def post(self, path: str, body: dict) -> dict:
+        req = urllib.request.Request(self.base + path, method="POST",
+                                     data=json.dumps(body).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as res:
+            return json.load(res)
+
+    def test_saving_marks_the_plan_as_the_humans(self) -> None:
+        plan = json.loads(json.dumps(TIMER_PLAN))
+        plan["parts"]["R1"]["legs"]["2"] = "g12"
+        payload = self.post("/api/breadboard", {"plan": plan})
+        stored = json.loads((self.dir / "t.breadboard.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["parts"]["R1"]["legs"]["2"], "g12")
+        self.assertIn("edited_by_human", stored)
+        # The first save of a session keeps the assistant's version.
+        backup = json.loads((self.dir / "t.breadboard.bak.json").read_text(encoding="utf-8"))
+        self.assertEqual(backup, TIMER_PLAN)
+        kinds = [f["kind"] for f in payload["breadboard"]["findings"]]
+        self.assertIn(OPEN, kinds)
+
+    def test_payload_tells_the_editor_what_it_needs(self) -> None:
+        bb = self.post("/api/layout", {})["breadboard"]
+        self.assertEqual(bb["parts"]["U1"]["kind"], "rigid")
+        self.assertEqual(bb["parts"]["U1"]["anchor"], "e10")
+        self.assertEqual(bb["parts"]["R1"]["kind"], "legs")
+        self.assertEqual(bb["used"]["e10"], {"part": "U1", "pin": "GND"})
+        self.assertEqual(bb["used"]["T+10"], {"wire": 0, "end": "to"})
+        self.assertEqual(bb["unplaced"], [])
+        self.assertIn("rowOrder", bb["geometry"])
+        # Unplugging R1 puts it on the tray, ready to be dragged back.
+        plan = json.loads(json.dumps(TIMER_PLAN))
+        del plan["parts"]["R1"]
+        bb = self.post("/api/breadboard", {"plan": plan})["breadboard"]
+        self.assertEqual([u["id"] for u in bb["unplaced"]], ["R1"])
+        self.assertEqual(bb["unplaced"][0]["pins"], ["1", "2"])
+
+    def test_breadboard_hand_back(self) -> None:
+        payload = self.post("/api/review", {"what": "breadboard"})
+        self.assertTrue(payload["bbReview"]["reviewed"])
+        self.assertTrue(payload["bbReview"]["current"])
+        self.assertFalse(payload["review"]["reviewed"])   # the schematic is separate
+        self.assertTrue((self.dir / "t.breadboard.svg").exists())
+        plan = json.loads(json.dumps(TIMER_PLAN))
+        plan["wires"].append({"from": "j20", "to": "j25"})
+        payload = self.post("/api/breadboard", {"plan": plan})
+        self.assertFalse(payload["bbReview"]["current"])
+
+
+class OwnershipTests(unittest.TestCase):
+    """Once the human has arranged the board, the assistant patches it."""
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+        self._orig = mcp_server.PROJECTS_DIR
+        mcp_server.PROJECTS_DIR = self.dir
+        mcp_server.tool_write_circuit({"project": "t", "circuit": json.loads(
+            json.dumps(TIMER))})
+        mcp_server.tool_write_breadboard({"project": "t", "breadboard": TIMER_PLAN})
+        edited = json.loads(json.dumps(TIMER_PLAN))
+        edited["edited_by_human"] = "2026-09-30T18:00:00+02:00"
+        (self.dir / "t.breadboard.json").write_text(json.dumps(edited), encoding="utf-8")
+
+    def tearDown(self) -> None:
+        mcp_server.PROJECTS_DIR = self._orig
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def stored(self) -> dict:
+        return json.loads((self.dir / "t.breadboard.json").read_text(encoding="utf-8"))
+
+    def test_write_refuses_to_overwrite_the_humans_plan(self) -> None:
+        text = mcp_server.tool_write_breadboard({"project": "t", "breadboard": {
+            "parts": {}}})
+        self.assertTrue(text.startswith("NOT written"), text)
+        self.assertIn("update_breadboard", text)
+        self.assertEqual(self.stored()["parts"], TIMER_PLAN["parts"])
+
+    def test_replace_overwrites_and_keeps_a_backup(self) -> None:
+        text = mcp_server.tool_write_breadboard({"project": "t", "replace": True,
+                                                 "breadboard": {"parts": {}}})
+        self.assertTrue(text.startswith("Written"), text)
+        self.assertEqual(self.stored()["parts"], {})
+        self.assertNotIn("edited_by_human", self.stored())
+        backup = json.loads((self.dir / "t.breadboard.bak.json").read_text(encoding="utf-8"))
+        self.assertEqual(backup["parts"], TIMER_PLAN["parts"])
+
+    def test_update_patches_and_keeps_the_rest(self) -> None:
+        text = mcp_server.tool_update_breadboard({"project": "t", "changes": {
+            "place": {"R1": {"legs": {"1": "T+22", "2": "g11"}}},
+            "remove_wires": [{"from": "T+13", "to": "a13"}],
+            "add_wires": [{"from": "b13", "to": "T+14"}]}})
+        self.assertIn("moved R1", text)
+        self.assertIn("removed wire", text)
+        self.assertIn("matches the netlist", text)
+        plan = self.stored()
+        self.assertEqual(plan["parts"]["R1"]["legs"]["1"], "T+22")
+        self.assertEqual(plan["parts"]["U1"], TIMER_PLAN["parts"]["U1"])
+        self.assertIn("edited_by_human", plan)
+        self.assertEqual(len(plan["wires"]), 3)
+
+    def test_update_that_breaks_the_plan_is_not_written(self) -> None:
+        text = mcp_server.tool_update_breadboard({"project": "t", "changes": {
+            "place": {"R1": {"legs": {"1": "j10", "2": "g11"}}}}})   # j10: a wire
+        self.assertTrue(text.startswith("NOT written"), text)
+        self.assertEqual(self.stored()["parts"]["R1"], TIMER_PLAN["parts"]["R1"])
+
+    def test_remove_wires_at_a_hole_and_unplug(self) -> None:
+        text = mcp_server.tool_update_breadboard({"project": "t", "changes": {
+            "remove_wires": ["T+10"], "remove_parts": ["R1", "R9"]}})
+        self.assertIn("unplugged R1", text)
+        self.assertIn("R9: was not on the board", text)
+        self.assertEqual(len(self.stored()["wires"]), 2)
+        self.assertIn("R1 is not on the breadboard yet", text)
+
+    def test_review_says_who_owns_the_plan(self) -> None:
+        text = "\n".join(b["text"] for b in mcp_server.tool_review_project(
+            {"project": "t"}) if b["type"] == "text")
+        self.assertIn("update_breadboard, not write_breadboard", text)
 
 
 if __name__ == "__main__":

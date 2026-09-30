@@ -11,7 +11,7 @@ import math
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
-from .breadboard import RAILS, ROW_Y, Breadboard, Hole, Part
+from .breadboard import RAILS, ROW_ORDER, ROW_Y, Breadboard, Hole, Part, PlacedPin
 from .document import Project, is_ground_net, is_supply_net
 from .footprints import RIGID
 
@@ -157,11 +157,18 @@ class BreadboardScene:
 
     # ── parts ────────────────────────────────────────────────────────────────
 
-    def _pad(self, h: Hole, title: str, fill: str = "#DDDDDD", r: float = 3.2) -> str:
-        x, y = hole_xy(h)
-        return (f'<circle class="pad" cx="{_f(x)}" cy="{_f(y)}" r="{r}" fill="{fill}" '
-                f'stroke="#555" stroke-width="0.8" data-node="{self._node(h)}">'
-                f'<title>{_esc(title)}</title></circle>')
+    def _pad(self, p: PlacedPin, fill: str = "#DDDDDD", r: float = 3.2,
+             lead: bool = False) -> str:
+        """A lead in its hole. `lead` marks it as one the editor can re-plug
+        on its own (bendable leads); rigid parts move only as a whole."""
+        x, y = hole_xy(p.hole)
+        grab = ""
+        if lead and p.ref:
+            grab = f' data-pin="{_esc(p.ref.split(".", 1)[1])}"'
+        return (f'<circle class="pad{" lead" if grab else ""}" cx="{_f(x)}" '
+                f'cy="{_f(y)}" r="{r}" fill="{fill}" stroke="#555" stroke-width="0.8" '
+                f'data-node="{self._node(p.hole)}" data-part="{_esc(p.cid)}"{grab}>'
+                f'<title>{_esc(p.label)}</title></circle>')
 
     def _rigid(self, part: Part) -> str:
         fp = part.fp
@@ -216,7 +223,7 @@ class BreadboardScene:
                        f'fill="{BOARD_FILL}"/>')
 
         for num, p in sorted(pts.items()):
-            out.append(self._pad(p.hole, p.label, pad_fill))
+            out.append(self._pad(p, pad_fill))
             if fp.package.startswith("DIP"):
                 px_, py_ = hole_xy(p.hole)
                 dx, dy = (0, 1) if horizontal else (1, 0)
@@ -336,11 +343,11 @@ class BreadboardScene:
         label = self._outside_label(part.cid, (mx + nx * off, my + ny * off + 3.5), anchor)
         return (f'<g class="bbpart" data-part="{_esc(part.cid)}"><title>{_esc(title)}</title>'
                 f'<line x1="{_f(ax)}" y1="{_f(ay)}" x2="{_f(bx)}" y2="{_f(by)}" '
-                f'stroke="#8A8A8A" stroke-width="1.8"/>'
+                f'stroke="#8A8A8A" stroke-width="1.8" pointer-events="none"/>'
                 f'<g transform="translate({_f(mx)},{_f(my)}) rotate({angle:.1f})">'
                 + "".join(body) + "</g>"
-                + self._pad(a.hole, a.label, "#8A8A8A", 2.6)
-                + self._pad(b.hole, b.label, "#8A8A8A", 2.6)
+                + self._pad(a, "#8A8A8A", 2.6, lead=True)
+                + self._pad(b, "#8A8A8A", 2.6, lead=True)
                 + label + "</g>")
 
     def _cluster(self, part: Part) -> str:
@@ -354,8 +361,8 @@ class BreadboardScene:
                f'<title>{_esc(part.cid)} · {_esc(part.value or part.ctype)}</title>']
         for (x, y), p in zip(pts, part.pins):
             out.append(f'<line x1="{_f(cx)}" y1="{_f(cy)}" x2="{_f(x)}" y2="{_f(y)}" '
-                       f'stroke="#8A8A8A" stroke-width="1.8"/>')
-            out.append(self._pad(p.hole, p.label, "#8A8A8A", 2.6))
+                       f'stroke="#8A8A8A" stroke-width="1.8" pointer-events="none"/>')
+            out.append(self._pad(p, "#8A8A8A", 2.6, lead=True))
         out.append(f'<rect x="{_f(cx - w / 2)}" y="{_f(cy - 10)}" width="{_f(w)}" '
                    f'height="20" rx="4" fill="#555" stroke="#222"/>'
                    f'<text x="{_f(cx)}" y="{_f(cy + 4)}" text-anchor="middle" '
@@ -386,8 +393,9 @@ class BreadboardScene:
                 mid = (hy + top) / 2
                 out.append(f'<path d="M{_f(hx)},{_f(hy)} C{_f(hx)},{_f(mid)} '
                            f'{_f(sx)},{_f(mid)} {_f(sx)},{_f(top)}" fill="none" '
-                           f'stroke="#555" stroke-width="2.2" stroke-dasharray="6 4"/>')
-                out.append(self._pad(p.hole, p.label, "#555", 2.8))
+                           f'stroke="#555" stroke-width="2.2" stroke-dasharray="6 4" '
+                           f'pointer-events="none"/>')
+                out.append(self._pad(p, "#555", 2.8, lead=True))
             out.append(f'<rect x="{_f(x - w / 2)}" y="{_f(top)}" width="{_f(w)}" '
                        f'height="26" rx="5" fill="#FFFFFF" stroke="#555" '
                        f'stroke-width="1.4"/>'
@@ -421,13 +429,16 @@ class BreadboardScene:
             node = self._node(w.a)
             title = f"Wire {i}: {w.a.name} → {w.b.name}" + \
                     (f" · net {', '.join(nets)}" if nets else "")
-            out.append(f'<g class="bbwire" data-node="{node}"><title>{_esc(title)}</title>'
+            out.append(f'<g class="bbwire" data-node="{node}" data-wire="{w.index}">'
+                       f'<title>{_esc(title)}</title>'
                        f'<path class="wire" d="{d}" fill="none" stroke="{_esc(color)}" '
                        f'stroke-width="3.4" stroke-linecap="round" data-node="{node}"/>'
-                       f'<circle cx="{_f(ax)}" cy="{_f(ay)}" r="2.8" fill="{_esc(color)}" '
-                       f'stroke="#222" stroke-width="0.8"/>'
-                       f'<circle cx="{_f(bx)}" cy="{_f(by)}" r="2.8" fill="{_esc(color)}" '
-                       f'stroke="#222" stroke-width="0.8"/></g>')
+                       f'<circle class="wend" cx="{_f(ax)}" cy="{_f(ay)}" r="2.8" '
+                       f'fill="{_esc(color)}" stroke="#222" stroke-width="0.8" '
+                       f'data-wire="{w.index}" data-end="from"/>'
+                       f'<circle class="wend" cx="{_f(bx)}" cy="{_f(by)}" r="2.8" '
+                       f'fill="{_esc(color)}" stroke="#222" stroke-width="0.8" '
+                       f'data-wire="{w.index}" data-end="to"/></g>')
         return out
 
     # ── assembly ─────────────────────────────────────────────────────────────
@@ -498,7 +509,33 @@ class BreadboardScene:
             "findings": self.bb.findings,
             "nodes": self.nodes(),
             "columns": self.cols,
+            # Everything the editor needs to move things around by itself.
+            "plan": self.project.breadboard,
+            "geometry": {"pitch": P, "rowY": ROW_Y, "railY": RAIL_Y,
+                         "rowOrder": ROW_ORDER, "columns": self.cols},
+            "parts": self._editor_parts(),
+            "unplaced": self.bb.unplaced(),
+            "used": self.bb.used_holes(),
         }
+
+    def _editor_parts(self) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for part in self.bb.parts.values():
+            rigid = (not part.offboard and part.fp is not None
+                     and part.fp.kind == RIGID)
+            entry: dict[str, Any] = {
+                "kind": "rigid" if rigid else "legs",
+                "type": part.ctype,
+                "offboard": part.offboard,
+                "holes": [p.hole.name for p in part.pins],
+            }
+            if rigid:
+                assert part.fp is not None and part.anchor is not None
+                entry.update(anchor=part.anchor.name, rotation=part.rotation,
+                             offsets={str(n): list(o)
+                                      for n, o in part.fp.offsets.items()})
+            out[part.cid] = entry
+        return out
 
     def to_svg(self) -> str:
         body = self._body(editor=False)
