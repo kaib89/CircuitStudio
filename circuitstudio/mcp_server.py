@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import footprints
+from .breadboard import Breadboard
 from .document import Project, is_safe_name, list_projects
 from .erc import check as erc_check, format_report
 from .registry import CONFIGURABLE_TYPES, KNOWN_TYPES, build_component
@@ -58,6 +60,22 @@ CIRCUIT_SCHEMA = {
                         "type": "object",
                         "description": "Only for 'ic' and board types: "
                                        "{left:[],right:[],top:[],bottom:[]}",
+                    },
+                    "package": {
+                        "type": "string",
+                        "description": (
+                            "Only needed for the breadboard: physical package of "
+                            "an 'ic' (\"DIP-14\", \"SIP-4\") — see "
+                            "list_component_types for the built-in defaults."
+                        ),
+                    },
+                    "pinout": {
+                        "type": "object",
+                        "description": (
+                            "Only needed for the breadboard: {pin name: physical "
+                            "pin number} from the datasheet, covering every pin. "
+                            "Required for 'ic' (with 'package') and transistors."
+                        ),
                     },
                     "n": {"type": "integer", "description": "Only for 'connector'"},
                     "side": {"type": "string", "description": "Only for 'connector'"},
@@ -173,6 +191,55 @@ CHANGES_SCHEMA = {
     },
 }
 
+_HOLE_DOC = ("Terminal holes a1…j<columns> (rows a–e and f–j are two separate "
+             "nodes per column, the centre channel between e and f is 0.3\" "
+             "wide), rail holes T+<col>, T-<col>, B-<col>, B+<col>.")
+
+BREADBOARD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "board": {
+            "type": "object",
+            "description": "Optional. columns: 63 (full size, default) or 30 "
+                           "(half size); split_rails: true if the rails are "
+                           "interrupted in the middle.",
+            "properties": {
+                "columns": {"type": "integer"},
+                "split_rails": {"type": "boolean"},
+            },
+        },
+        "parts": {
+            "type": "object",
+            "description": (
+                "{part ID: placement}. Rigid parts (DIP/SIP ICs, ne555, opamp, "
+                "transistors, potentiometer, pico): {\"anchor\": hole of pin 1, "
+                "\"rotation\": 0|90|180|270}. A DIP straddles the channel with "
+                "pin 1 in row e and rotation 0 (pins run to the right along e, "
+                "back along f); a Pico with pin 1 in row c and rotation 0 has "
+                "pins 1–20 in row c and 40–21 in row h. Everything else: "
+                "{\"legs\": {pin name: hole}}. Parts that do not sit on the "
+                "board (antennas, speakers, batteries): {\"offboard\": true, "
+                "\"legs\": {pin name: hole where its lead ends}}. " + _HOLE_DOC
+            ),
+        },
+        "wires": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string"},
+                    "to": {"type": "string"},
+                    "color": {"type": "string",
+                              "description": "Optional; by default GND is black, "
+                                             "supplies red, signals colour-coded."},
+                },
+                "required": ["from", "to"],
+            },
+        },
+    },
+    "required": ["parts"],
+}
+
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_projects",
@@ -236,6 +303,38 @@ TOOLS: list[dict[str, Any]] = [
                 "changes": CHANGES_SCHEMA,
             },
             "required": ["project", "changes"],
+        },
+    },
+    {
+        "name": "get_breadboard",
+        "description": "Read a project's breadboard plan (breadboard.json), if any.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"project": {"type": "string"}},
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "write_breadboard",
+        "description": (
+            "Write the breadboard plan: which lead of every part goes into "
+            "which hole, plus the jumper wires. The editor shows it in its "
+            "'Breadboard' view. The plan is checked against the netlist and "
+            "the result is returned: shorts, connections that are missing on "
+            "the board, unused pins that sit in a live column. A plan that is "
+            "broken in itself (unknown holes or parts, two leads in one hole, "
+            "a DIP that does not fit) is NOT written. Parts with fixed pin "
+            "spacing need 'package'/'pinout' in the circuit first (see "
+            "list_component_types). GND/VCC/label symbols are not parts: "
+            "bring their nets to the rails with wires."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "breadboard": BREADBOARD_SCHEMA,
+            },
+            "required": ["project", "breadboard"],
         },
     },
     {
@@ -304,6 +403,7 @@ def _validate(circuit: dict[str, Any]) -> list[str]:
             errors.append(f"Part '{cid}': {exc}")
             continue
         comps[cid] = comp
+        errors += footprints.check_spec(spec, comp)
         if "group" in spec and not isinstance(spec["group"], str):
             errors.append(f"Part '{cid}': 'group' must be a string")
         names = [p.name for p in comp.pins]
@@ -435,6 +535,8 @@ def tool_list_component_types(_args: dict[str, Any]) -> str:
                  "symbol that serves no pin, a label whose value differs from "
                  "its net's name, and ground/supply symbols on a net whose "
                  "name says otherwise.")
+    lines.append("")
+    lines += footprints.summary()
     return "\n".join(lines)
 
 
@@ -496,6 +598,11 @@ def _save(name: str, circuit: dict[str, Any], preface: list[str] | None = None) 
     if warnings:
         msg.append("")
         msg.append(format_report(warnings))
+    project.load_breadboard()
+    if project.breadboard is not None:
+        # A changed netlist can break a breadboard plan that used to be fine.
+        msg.append("")
+        msg.append(Breadboard(project.breadboard, circuit).report())
     msg.append("")
     msg.append("The human now arranges the parts in the editor (open_editor). "
                "When they say they are done, call review_project to see what "
@@ -678,6 +785,37 @@ def tool_update_circuit(args: dict[str, Any]) -> str:
     return result
 
 
+def tool_get_breadboard(args: dict[str, Any]) -> str:
+    name = _require_name(args)
+    project = Project(PROJECTS_DIR, name)
+    if not project.breadboard_path.exists():
+        return (f"Project '{name}' has no breadboard plan yet — write one with "
+                f"write_breadboard.")
+    return project.breadboard_path.read_text(encoding="utf-8")
+
+
+def tool_write_breadboard(args: dict[str, Any]) -> str:
+    name = _require_name(args)
+    plan = args.get("breadboard")
+    if not isinstance(plan, dict):
+        raise ValueError("'breadboard' must be an object.")
+    project = Project(PROJECTS_DIR, name)
+    if not project.circuit_path.exists():
+        return f"Project '{name}' does not exist yet — write the circuit first."
+    project.load()
+    bb = Breadboard(plan, project.circuit)
+    if bb.structure_errors:
+        return ("NOT written — please fix:\n"
+                + "\n".join(f"- {e}" for e in bb.structure_errors))
+    project.save_breadboard(plan)
+    return "\n".join([
+        f"Written: {project.breadboard_path}",
+        bb.report(),
+        "",
+        "The human sees it in the editor's 'Breadboard' view (open_editor).",
+    ])
+
+
 def _open_browser(url: str) -> None:
     """webbrowser may start helpers that inherit our stdout (the protocol
     channel), so do it from a child whose output goes nowhere."""
@@ -733,6 +871,10 @@ def tool_review_project(args: dict[str, Any]) -> list[dict[str, Any]]:
     # scene.erc also knows the arrangement, e.g. a GND symbol left hanging.
     lines.append(format_report(scene.erc))
     lines.append("")
+    if project.breadboard is not None or project.breadboard_error:
+        lines.append(project.breadboard_error or
+                     Breadboard(project.breadboard, project.circuit).report())
+        lines.append("")
 
     if not state["reviewed"]:
         lines.append(
@@ -777,6 +919,8 @@ HANDLERS = {
     "get_circuit": tool_get_circuit,
     "write_circuit": tool_write_circuit,
     "update_circuit": tool_update_circuit,
+    "get_breadboard": tool_get_breadboard,
+    "write_breadboard": tool_write_breadboard,
     "open_editor": tool_open_editor,
     "review_project": tool_review_project,
 }

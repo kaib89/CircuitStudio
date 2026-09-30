@@ -32,6 +32,11 @@ const btnAlignY = document.getElementById('btnAlignY');
 const btnDistX = document.getElementById('btnDistX');
 const btnDistY = document.getElementById('btnDistY');
 const btnHandBack = document.getElementById('btnHandBack');
+const bbCanvas = document.getElementById('bbCanvas');
+const bbContent = document.getElementById('bbContent');
+const bbEmpty = document.getElementById('bbEmpty');
+const btnModeSch = document.getElementById('btnModeSch');
+const btnModeBb = document.getElementById('btnModeBb');
 
 let scene = null;
 let lastProject = null;
@@ -50,6 +55,14 @@ let viewSaveTimer = null;
 let lastWpClick = null;
 let hoverNet = null;
 let review = { reviewed: false, current: false };
+let mode = 'schematic';     // or 'breadboard' — stored per project
+let bb = null;              // breadboard payload from the server
+let bbSvg = '';
+let bbView = null;
+let bbPan = null;
+let bbHover = null;
+let bbViewSaveTimer = null;
+let fitPending = false;     // schematic fit requested while it was hidden
 const undoStack = [];
 const redoStack = [];
 const HISTORY_MAX = 50;
@@ -203,9 +216,13 @@ function scheduleViewSave() {
 
 function fitView() {
   if (!scene) return;
-  const [x, y, w, h] = scene.viewBox;
   const rect = canvas.getBoundingClientRect();
-  const aspect = rect.width / Math.max(rect.height, 1);
+  // Hidden behind the breadboard view: fitting now would compute (and save)
+  // a nonsense view, so do it when the schematic is shown again.
+  if (!rect.width || !rect.height) { fitPending = true; return; }
+  fitPending = false;
+  const [x, y, w, h] = scene.viewBox;
+  const aspect = rect.width / rect.height;
   let vw = w, vh = h;
   if (w / h > aspect) vh = w / aspect; else vw = h * aspect;
   view = { x: x - (vw - w) / 2, y: y - (vh - h) / 2, w: vw, h: vh };
@@ -429,6 +446,7 @@ function render() {
   setStatus(defaultStatus());
 
   renderNotes();
+  if (mode === 'breadboard') renderBbBoxes();
 
   btnAlignX.disabled = btnAlignY.disabled = selectedComponents().length < 2;
   btnDistX.disabled = btnDistY.disabled = selectedComponents().length < 3;
@@ -455,6 +473,8 @@ function applyPayload(payload) {
   const ids = new Set(scene.components.map(c => c.id));
   selected = new Set([...selected].filter(id => ids.has(id)));
 
+  bb = payload.breadboard || { exists: false };
+  renderBreadboard();
   render();
   return payload;
 }
@@ -463,7 +483,13 @@ function applyPayload(payload) {
 
 async function loadState(resetView) {
   const payload = await api('/api/state');
+  if (resetView) {
+    mode = payload.mode === 'breadboard' ? 'breadboard' : 'schematic';
+    bbView = payload.bbView && payload.bbView.w > 0 ? payload.bbView : null;
+    bbSvg = '';   // another project: its board must be drawn afresh
+  }
   applyPayload(payload);
+  applyMode();
   if (resetView) {
     if (payload.view && payload.view.w > 0) {
       view = payload.view;
@@ -862,6 +888,12 @@ canvas.addEventListener('wheel', evt => {
 
 document.addEventListener('keydown', async evt => {
   if (evt.target.tagName === 'SELECT' || evt.target.tagName === 'INPUT') return;
+  if (mode === 'breadboard') {
+    // Nothing to edit here yet; the schematic shortcuts would act on parts
+    // that are not even visible.
+    if (!evt.ctrlKey && !evt.metaKey && evt.key.toLowerCase() === 'f') fitBb();
+    return;
+  }
   if (evt.code === 'Space') {
     spaceDown = true;
     evt.preventDefault();
@@ -1010,7 +1042,8 @@ btnAlignY.addEventListener('click', () => align('y'));
 btnDistX.addEventListener('click', () => distribute('x'));
 btnDistY.addEventListener('click', () => distribute('y'));
 
-document.getElementById('btnFit').addEventListener('click', fitView);
+document.getElementById('btnFit').addEventListener('click',
+  () => (mode === 'breadboard' ? fitBb() : fitView()));
 
 document.getElementById('btnArrange').addEventListener('click', async () => {
   if (!confirm('Discard all positions (locked parts stay) and lay out the schematic again?')) return;
@@ -1030,7 +1063,7 @@ document.getElementById('btnReroute').addEventListener('click', async () => {
 
 document.getElementById('btnExport').addEventListener('click', async () => {
   try {
-    const res = await api('/api/export', {});
+    const res = await api('/api/export', mode === 'breadboard' ? { what: 'breadboard' } : {});
     setStatus('Saved: ' + res.path);
   } catch (err) { setStatus('Error: ' + err.message); }
 });
@@ -1144,10 +1177,233 @@ chkGrid.addEventListener('change', async () => {
   } catch (err) { setStatus('Error: ' + err.message); }
 });
 
+// ── breadboard view ────────────────────────────────────────────────────────
+//
+// Read-only for now: the assistant writes the plan, the server draws it and
+// checks it against the netlist. The editor adds pan/zoom and lights up an
+// electrical node — every hole, lead and wire carries its node in data-node.
+
+const BB_KINDS = {
+  short: 'short(s) — nets that must stay apart meet',
+  open: 'open connection(s) — the board does not join what the schematic joins',
+  stray: 'unused pin(s) sitting in a live column',
+  unplaced: 'not plugged in yet',
+};
+
+function bbMetrics() {
+  const rect = bbCanvas.getBoundingClientRect();
+  const upp = Math.max(bbView.w / rect.width, bbView.h / rect.height);
+  return {
+    rect, upp,
+    offX: (rect.width - bbView.w / upp) / 2,
+    offY: (rect.height - bbView.h / upp) / 2,
+  };
+}
+
+function bbToUser(evt) {
+  const m = bbMetrics();
+  return {
+    x: bbView.x + (evt.clientX - m.rect.left - m.offX) * m.upp,
+    y: bbView.y + (evt.clientY - m.rect.top - m.offY) * m.upp,
+  };
+}
+
+function applyBbView() {
+  if (bbView) {
+    bbCanvas.setAttribute('viewBox', `${bbView.x} ${bbView.y} ${bbView.w} ${bbView.h}`);
+  }
+}
+
+function scheduleBbViewSave() {
+  clearTimeout(bbViewSaveTimer);
+  bbViewSaveTimer = setTimeout(() => {
+    api('/api/layout', { bbView }).catch(() => {});
+  }, 900);
+}
+
+function fitBb() {
+  if (!bb || !bb.exists) return;
+  const rect = bbCanvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;   // not visible yet
+  const [x, y, w, h] = bb.viewBox;
+  const aspect = rect.width / rect.height;
+  let vw = w, vh = h;
+  if (w / h > aspect) vh = w / aspect; else vw = h * aspect;
+  bbView = { x: x - (vw - w) / 2, y: y - (vh - h) / 2, w: vw, h: vh };
+  applyBbView();
+  scheduleBbViewSave();
+}
+
+function bbProblems() {
+  return ((bb && bb.findings) || []).filter(f => f.kind !== 'unplaced');
+}
+
+function bbDefaultStatus() {
+  if (!bb || !bb.exists) return 'No breadboard plan yet';
+  const all = bb.findings || [];
+  const problems = bbProblems().length;
+  if (problems) return `Breadboard · ${problems} problem(s), see the list`;
+  if (all.length) return 'Breadboard · no problems so far, but not everything is plugged in';
+  return 'Breadboard · matches the schematic ✓';
+}
+
+/** The message boxes belong to whichever view is shown. */
+function renderBbBoxes() {
+  if (!bb || !bb.exists) {
+    errorsBox.hidden = !(bb && bb.error);
+    if (bb && bb.error) errorsBox.textContent = bb.error;
+    warningsBox.hidden = true;
+    setStatus(bbDefaultStatus());
+    return;
+  }
+  const findings = bb.findings || [];
+  const structure = findings.filter(f => f.kind === 'structure');
+  errorsBox.hidden = !structure.length;
+  if (structure.length) {
+    errorsBox.textContent =
+      `The plan itself has ${structure.length} problem(s) — tell the assistant:\n` +
+      structure.map(f => '· ' + f.message).join('\n');
+  }
+  const parts = [];
+  for (const [kind, text] of Object.entries(BB_KINDS)) {
+    const list = findings.filter(f => f.kind === kind);
+    if (list.length) {
+      parts.push(`${list.length} ${text}:\n` + list.map(f => '· ' + f.message).join('\n'));
+    }
+  }
+  warningsBox.hidden = !parts.length;
+  if (parts.length) warningsBox.textContent = parts.join('\n\n');
+  setStatus(bbDefaultStatus());
+}
+
+function renderBreadboard() {
+  const n = bbProblems().length;
+  btnModeBb.innerHTML = 'Breadboard' + (n ? `<span class="badge">${n}</span>` : '');
+  btnModeBb.title = !bb || !bb.exists
+    ? 'No breadboard plan yet — the assistant writes one with write_breadboard'
+    : n ? `${n} problem(s) on the breadboard` : 'The breadboard plan matches the schematic';
+
+  if (!bb || !bb.exists) {
+    bbContent.innerHTML = '';
+    bbSvg = '';
+    if (mode === 'breadboard') applyMode();
+    return;
+  }
+  if (bb.svg !== bbSvg) {
+    bbSvg = bb.svg;
+    bbContent.innerHTML = bb.svg;
+    bbHover = null;
+    bbCanvas.classList.remove('focus');
+  }
+  if (mode === 'breadboard') {
+    bbCanvas.style.display = '';
+    bbEmpty.hidden = true;
+    if (bbView) applyBbView(); else fitBb();
+  }
+}
+
+function applyMode() {
+  const isBb = mode === 'breadboard';
+  const has = !!(bb && bb.exists);
+  document.body.classList.toggle('bb', isBb);
+  canvas.style.display = isBb ? 'none' : '';
+  bbCanvas.style.display = isBb && has ? '' : 'none';
+  bbEmpty.hidden = !(isBb && !has);
+  btnModeSch.classList.toggle('active', !isBb);
+  btnModeBb.classList.toggle('active', isBb);
+  if (isBb) {
+    if (has) { if (bbView) applyBbView(); else fitBb(); }
+    renderBbBoxes();
+  } else {
+    if (fitPending) fitView();
+    render();     // puts the schematic's messages and status back
+  }
+}
+
+function setMode(m) {
+  if (m === mode) return;
+  setNetFocus(null);
+  setBbFocus(null);
+  mode = m;
+  applyMode();
+  api('/api/layout', { mode }).catch(() => {});
+}
+
+btnModeSch.addEventListener('click', () => setMode('schematic'));
+btnModeBb.addEventListener('click', () => setMode('breadboard'));
+
+/** Light up one electrical node and say what is in it. */
+function setBbFocus(node) {
+  if (node === bbHover) return;
+  bbHover = node;
+  for (const el of bbContent.querySelectorAll('.hl')) el.classList.remove('hl');
+  bbCanvas.classList.toggle('focus', !!node);
+  if (mode !== 'breadboard') return;
+  if (!node) { setStatus(bbDefaultStatus()); return; }
+  for (const el of bbContent.querySelectorAll(`[data-node="${CSS.escape(node)}"]`)) {
+    el.classList.add('hl');
+  }
+  const info = (bb.nodes || {})[node];
+  if (!info) { setStatus('Empty — nothing plugged in here'); return; }
+  // The net first: in a big node (GND) the list of places gets long.
+  const pins = info.pins, where = info.where;
+  setStatus((info.nets.length ? `Net ${info.nets.join(' + ')}` : 'No net') +
+            ` · ${where.slice(0, 3).join(', ')}` +
+            (where.length > 3 ? ` +${where.length - 3} more places` : '') +
+            (pins.length ? ` · ${pins.slice(0, 6).join(', ')}` : '') +
+            (pins.length > 6 ? ` … (+${pins.length - 6})` : ''));
+}
+
+bbCanvas.addEventListener('pointerdown', evt => {
+  if (evt.button !== 0 && evt.button !== 1) return;
+  evt.preventDefault();
+  bbPan = { sx: evt.clientX, sy: evt.clientY, upp: bbMetrics().upp,
+            view: { ...bbView }, moved: false };
+  bbCanvas.classList.add('panning');
+  try { bbCanvas.setPointerCapture(evt.pointerId); } catch (e) { /* ignore */ }
+});
+
+bbCanvas.addEventListener('pointermove', evt => {
+  if (bbPan) {
+    const dx = evt.clientX - bbPan.sx, dy = evt.clientY - bbPan.sy;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) bbPan.moved = true;
+    bbView.x = bbPan.view.x - dx * bbPan.upp;
+    bbView.y = bbPan.view.y - dy * bbPan.upp;
+    applyBbView();
+    return;
+  }
+  const el = evt.target.closest ? evt.target.closest('[data-node]') : null;
+  setBbFocus(el && bbContent.contains(el) ? el.dataset.node : null);
+});
+
+bbCanvas.addEventListener('pointerup', evt => {
+  bbCanvas.classList.remove('panning');
+  if (bbCanvas.hasPointerCapture(evt.pointerId)) bbCanvas.releasePointerCapture(evt.pointerId);
+  if (bbPan && bbPan.moved) scheduleBbViewSave();
+  bbPan = null;
+});
+
+bbCanvas.addEventListener('pointerleave', () => { if (!bbPan) setBbFocus(null); });
+
+bbCanvas.addEventListener('wheel', evt => {
+  evt.preventDefault();
+  if (!bbView) return;
+  const p = bbToUser(evt);
+  const factor = evt.deltaY > 0 ? 1.12 : 1 / 1.12;
+  bbView = {
+    x: p.x - (p.x - bbView.x) * factor,
+    y: p.y - (p.y - bbView.y) * factor,
+    w: bbView.w * factor,
+    h: bbView.h * factor,
+  };
+  applyBbView();
+  scheduleBbViewSave();
+}, { passive: false });
+
 // ── live reload when the LLM rewrites circuit.json ─────────────────────────
 
 setInterval(async () => {
-  if (drag || pan || wpDrag || wireClick || band || noteDrag) return;
+  if (drag || pan || wpDrag || wireClick || band || noteDrag || bbPan) return;
   try {
     const v = await api('/api/version');
     // Another tab may have switched this editor to a different project; its
@@ -1159,9 +1415,14 @@ setInterval(async () => {
 
 window.addEventListener('resize', () => {
   const rect = canvas.getBoundingClientRect();
-  const aspect = rect.width / Math.max(rect.height, 1);
-  view.h = view.w / aspect;
-  applyView();
+  if (rect.width > 0 && rect.height > 0) {
+    view.h = view.w * rect.height / rect.width;
+    applyView();
+  }
+  if (bbView) {
+    const r = bbCanvas.getBoundingClientRect();
+    if (r.width > 0) { bbView.h = bbView.w * r.height / r.width; applyBbView(); }
+  }
 });
 
 loadState(true).catch(err => setStatus('Error while loading: ' + err.message));

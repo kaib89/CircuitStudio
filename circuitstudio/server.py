@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from .bb_scene import BreadboardScene
 from .document import Project, is_safe_name, list_projects
 from .scene import Scene
 
@@ -77,7 +78,18 @@ class AppState:
             "showGrid": bool(self.project.layout.get("showGrid", True)),
             "showNetNames": bool(self.project.layout.get("showNetNames", True)),
             "review": self.project.review_state(),
+            "mode": self.project.layout.get("mode", "schematic"),
+            "bbView": self.project.layout.get("bbView"),
+            "breadboard": self.breadboard_payload(),
         }
+
+    def breadboard_payload(self) -> dict[str, Any]:
+        proj = self.project
+        if proj.breadboard is None:
+            return {"exists": False, "error": proj.breadboard_error}
+        payload = BreadboardScene(proj).to_dict()
+        payload["error"] = None
+        return payload
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -136,6 +148,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/state":
             with self.state.lock:
                 self.state.project.reload_circuit_if_changed()
+                self.state.project.reload_breadboard_if_changed()
                 payload = self.state.scene_payload()
             self._json(payload)
             return
@@ -143,6 +156,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/version":
             with self.state.lock:
                 self.state.project.reload_circuit_if_changed()
+                self.state.project.reload_breadboard_if_changed()
                 payload = {"version": self.state.project.version,
                            "project": self.state.project.name,
                            "folder": str(self.state.projects_dir.resolve())}
@@ -172,6 +186,10 @@ class Handler(BaseHTTPRequestHandler):
                     proj.set_positions(positions)
                 if isinstance(body.get("view"), dict):
                     proj.layout["view"] = body["view"]
+                if isinstance(body.get("bbView"), dict):
+                    proj.layout["bbView"] = body["bbView"]
+                if body.get("mode") in ("schematic", "breadboard"):
+                    proj.layout["mode"] = body["mode"]
                 if isinstance(body.get("grid"), int) and body["grid"] > 0:
                     proj.layout["grid"] = body["grid"]
                 if isinstance(body.get("showGrid"), bool):
@@ -292,8 +310,17 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/export":
+            what = (body or {}).get("what") if isinstance(body, dict) else None
             with self.state.lock:
                 proj = self.state.project
+                if what == "breadboard":
+                    if proj.breadboard is None:
+                        self._error(409, "this project has no breadboard plan yet")
+                        return
+                    proj.breadboard_svg_path.write_text(
+                        BreadboardScene(proj).to_svg(), encoding="utf-8")
+                    self._json({"path": str(proj.breadboard_svg_path)})
+                    return
                 svg = Scene(proj).to_svg()
                 proj.save_routes()
                 proj.svg_path.write_text(svg, encoding="utf-8")

@@ -15,6 +15,7 @@ keeps those two jobs in separate files, so neither side overwrites the other.
 |------|----------|----------|
 | `<name>.circuit.json` | components, nets, notes, no-connects | the assistant |
 | `<name>.layout.json` | positions, rotation, wires and their waypoints, note boxes | you |
+| `<name>.breadboard.json` | optional: which lead goes into which breadboard hole | the assistant (for now) |
 
 The assistant can rewrite the circuit at any time and your arrangement survives:
 components are matched by ID, so anything already placed stays where you put it,
@@ -78,7 +79,8 @@ currently running.
 ```
 
 Tools: `list_projects`, `list_component_types`, `get_circuit`, `write_circuit`,
-`update_circuit`, `open_editor`, `review_project`.
+`update_circuit`, `get_breadboard`, `write_breadboard`, `open_editor`,
+`review_project`.
 
 `update_circuit` edits an existing netlist in place — add, replace or remove
 parts, nets and notes, connect or disconnect pins, mark pins as no-connect — so
@@ -213,6 +215,68 @@ ICs, connectors and board symbols (`esp32`, `rpi`, `pico`, `arduino_uno`,
   "pins": { "left": ["3V3", "EN"], "right": ["GPIO2"], "bottom": ["GND"] } }
 ```
 
+## Breadboard view
+
+Next to the schematic, the editor has a **Breadboard** view: the assistant
+writes a plugging plan with `write_breadboard`, and the editor draws it — and
+checks it against the netlist. A breadboard is electrically simple (every half
+column is one node, every rail another), so the connections the plan *really*
+makes can be worked out and compared with the schematic:
+
+- **Short** — two nets meet, e.g. a lead in the GND column of a chip.
+- **Open** — the schematic joins pins the board leaves apart.
+- **Stray pin** — an unused pin (or one marked no-connect) sits in a live
+  column, e.g. the Pico's 3V3_EN next to 3V3.
+- **Not plugged in** — parts or leads the plan does not place yet.
+
+A plan that is broken in itself — an unknown hole, two leads in one hole, a
+DIP that does not straddle the channel — is not written at all. Problems are
+ringed on the board, listed at the bottom right and counted on the
+**Breadboard** button. Point at any hole, lead or wire and everything
+electrically connected to it lights up, with its net and pins in the status
+bar. **Export SVG** writes `<name>.breadboard.svg` while this view is shown.
+
+```json
+{
+  "board": { "columns": 63, "split_rails": false },
+  "parts": {
+    "U1":   { "anchor": "e30", "rotation": 0 },
+    "R1":   { "legs": { "1": "d30", "2": "d31" } },
+    "ANT1": { "offboard": true, "legs": { "1": "a33" } }
+  },
+  "wires": [ { "from": "j30", "to": "T+30", "color": "red" } ]
+}
+```
+
+Holes are named as printed on the board: `a1`…`j63`, and the rails `T+`, `T-`,
+`B-`, `B+` plus a column. Parts with fixed pin spacing (DIP/SIP chips, the
+555, op-amps, transistors, pots, the Pico) are placed by the hole of pin 1
+and a rotation; a DIP with pin 1 in row e and rotation 0 straddles the channel
+with its pins running right along e and back along f. Everything else is placed
+lead by lead. Parts that live off the board (antennas, speakers) are
+`offboard` and drawn below it with their leads. GND/VCC/label symbols are not
+parts — their nets reach the rails through wires.
+
+For that, a part needs its physical pin numbers. They are a property of the
+part, so they belong in the circuit (the assistant's file), not the layout:
+
+```json
+{ "id": "U1", "type": "ic", "value": "74HCU04", "package": "DIP-14",
+  "pinout": { "1A": 1, "1Y": 2, "2A": 3, "2Y": 4, "3A": 5, "3Y": 6, "GND": 7,
+              "4Y": 8, "4A": 9, "5Y": 10, "5A": 11, "6Y": 12, "6A": 13, "VCC": 14 } }
+```
+
+The 555 (DIP-8), single op-amps (standard DIP-8 pinout) and pots come with a
+built-in pinout; transistors need one from the datasheet, because EBC and CBE
+both exist. The Pico's 40 header pins are built in: name the schematic pins
+`GP0`…`GP28`, `GND`, `3V3`, `VSYS`, `VBUS`, `RUN`, `3V3_EN`, `ADC_VREF`,
+`AGND`, and all its GND pins count as one. AGND is kept separate — whether it
+is joined to GND on the board was not verified.
+
+When the circuit changes, `write_circuit`/`update_circuit` re-check an existing
+breadboard plan and report what the change broke; `review_project` includes the
+breadboard check as well.
+
 ## Editor
 
 | Action | How |
@@ -267,6 +331,9 @@ circuitstudio/
   document.py    the two JSON documents, merging, auto-placement
   router.py      orthogonal routing (A*) and junction detection
   erc.py         rule check: open pins, split nodes, dead nets
+  footprints.py  physical packages and pin numbers (DIP, SIP, Pico)
+  breadboard.py  breadboard plan: parsing and the check against the netlist
+  bb_scene.py    breadboard drawing for the editor and the SVG export
   scene.py       geometry; feeds both the editor and the SVG export
   server.py      local HTTP server (127.0.0.1 only)
   mcp_server.py  MCP server for assistants
