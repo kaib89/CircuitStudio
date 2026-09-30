@@ -257,6 +257,87 @@ circle.openpin {
   white-space: pre-wrap;
 }
 
+/* ── Schematic / breadboard switch ─────────────────────────────────────── */
+
+body.bb .sch-only { display: none !important; }
+body:not(.bb) .bb-only { display: none !important; }
+
+.modes { display: inline-flex; }
+#toolbar .modes button.mode { border-radius: 0; }
+#toolbar .modes button.mode:first-child { border-radius: 5px 0 0 5px; }
+#toolbar .modes button.mode:last-child { border-radius: 0 5px 5px 0; border-left: none; }
+#toolbar .modes button.mode.active {
+  background: #0d4f8b;
+  border-color: #0d4f8b;
+  color: #ffffff;
+}
+#toolbar .modes button.mode .badge {
+  display: inline-block;
+  min-width: 16px;
+  margin-left: 5px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #d94f4f;
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+#bbCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #ffffff;
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+#bbCanvas.panning { cursor: grabbing; }
+
+#bbCanvas .nodehit { fill: transparent; }
+#bbCanvas .nodehit.hl { fill: #e0007a; fill-opacity: .10; }
+#bbCanvas .hole.hl { fill: #e0007a; }
+#bbCanvas .pad.hl { stroke: #e0007a; stroke-width: 2.5; }
+#bbCanvas path.wire.hl { stroke-width: 5.5; }
+#bbCanvas.focus .bbwire:not(.hl) { opacity: .35; }
+
+#bbCanvas .bbmark {
+  fill: none;
+  stroke: #d94f4f;
+  stroke-width: 2;
+  stroke-dasharray: 3 2;
+  pointer-events: none;
+}
+#bbCanvas .bbmark.unplaced { stroke: #d98b00; }
+
+#bbEmpty {
+  position: absolute;
+  left: 50%;
+  top: 40%;
+  transform: translate(-50%, -50%);
+  max-width: 44ch;
+  padding: 16px 20px;
+  background: #ffffff;
+  border: 1px solid #d3dae2;
+  border-radius: 8px;
+  color: #55636f;
+  line-height: 1.5;
+  text-align: center;
+}
+
+#bbHint {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  color: #7b8794;
+  font-size: 12px;
+  background: rgba(255,255,255,.85);
+  padding: 4px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
 /* Narrower windows: the toolbar must never wrap (see #toolbar), so it gets
    denser instead of losing controls off the right edge. */
 @media (max-width: 1640px) {

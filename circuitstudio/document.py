@@ -2,6 +2,8 @@
 
 `<name>.circuit.json`  — logic only: components + nets. Owned by the LLM.
 `<name>.layout.json`   — looks only: positions, rotation, view. Owned by the human.
+`<name>.breadboard.json` — optional: which lead sits in which breadboard hole
+                          (see breadboard.py). Written by the LLM for now.
 
 Keeping them apart is what makes the workflow work: the LLM can rewrite the
 circuit without destroying a hand-tuned layout, and dragging things around never
@@ -100,6 +102,9 @@ class Project:
                                        "wires": {}, "view": None}
         self.version = 0
         self._circuit_mtime: float = 0.0
+        self.breadboard: dict[str, Any] | None = None
+        self.breadboard_error: str | None = None
+        self._bb_mtime: float = 0.0
         self._backed_up = False
         self.routes_dirty = False    # set by Scene when it produced new wires
 
@@ -116,6 +121,14 @@ class Project:
     @property
     def layout_backup_path(self) -> Path:
         return self.folder / f"{self.name}.layout.bak.json"
+
+    @property
+    def breadboard_path(self) -> Path:
+        return self.folder / f"{self.name}.breadboard.json"
+
+    @property
+    def breadboard_svg_path(self) -> Path:
+        return self.folder / f"{self.name}.breadboard.svg"
 
     @property
     def svg_path(self) -> Path:
@@ -173,7 +186,40 @@ class Project:
         self.circuit.setdefault("nets", [])
         self.circuit.setdefault("notes", [])
         self.circuit.setdefault("nc", [])
+        self.load_breadboard()
         return self.load_layout()
+
+    def load_breadboard(self) -> bool:
+        """(Re)read breadboard.json. A broken file is reported, not fatal."""
+        path = self.breadboard_path
+        if not path.exists():
+            changed = self.breadboard is not None or self.breadboard_error is not None
+            self.breadboard, self.breadboard_error, self._bb_mtime = None, None, 0.0
+            return changed
+        mtime = path.stat().st_mtime
+        if mtime == self._bb_mtime:
+            return False
+        try:
+            self.breadboard = _read_json(path)
+            self.breadboard_error = None
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as exc:
+            self.breadboard = None
+            self.breadboard_error = f"{path.name} is not valid JSON: {exc}"
+        self._bb_mtime = mtime
+        return True
+
+    def reload_breadboard_if_changed(self) -> bool:
+        """Pick up a breadboard plan the LLM (re)wrote while the editor runs."""
+        if self.load_breadboard():
+            self.version += 1
+            return True
+        return False
+
+    def save_breadboard(self, data: dict[str, Any]) -> None:
+        _write_json(self.breadboard_path, data)
+        self.breadboard = data
+        self.breadboard_error = None
+        self._bb_mtime = self.breadboard_path.stat().st_mtime
 
     def load_layout(self) -> "Project":
         """Load only layout.json (plus auto-placement for the current circuit)."""

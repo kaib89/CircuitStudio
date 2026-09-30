@@ -15,13 +15,18 @@
     <select id="projectSelect"></select>
   </label>
 
-  <button id="btnFit" title="Fit the whole schematic into the view">Fit</button>
-  <button id="btnReroute" title="Forget the stored wires and route every connection afresh">Reroute</button>
-  <button id="btnArrange" title="Discard all positions except locked parts and lay the schematic out again">Auto-arrange</button>
-  <button id="btnExport" title="Write the SVG next to the project files">Export SVG</button>
-  <button id="btnHandBack" title="Mark the arrangement as finished and render a picture the assistant can look at">Hand back ✓</button>
+  <span class="modes" role="tablist">
+    <button id="btnModeSch" class="mode active" title="The schematic you arrange">Schematic</button>
+    <button id="btnModeBb" class="mode" title="The breadboard plan the assistant wrote, checked against the netlist">Breadboard</button>
+  </span>
 
-  <span class="group" id="alignGroup">
+  <button id="btnFit" title="Fit the whole drawing into the view">Fit</button>
+  <button id="btnReroute" class="sch-only" title="Forget the stored wires and route every connection afresh">Reroute</button>
+  <button id="btnArrange" class="sch-only" title="Discard all positions except locked parts and lay the schematic out again">Auto-arrange</button>
+  <button id="btnExport" title="Write the SVG of the current view next to the project files">Export SVG</button>
+  <button id="btnHandBack" class="sch-only" title="Mark the arrangement as finished and render a picture the assistant can look at">Hand back ✓</button>
+
+  <span class="group sch-only" id="alignGroup">
     <span class="group-label">Align</span>
     <button id="btnAlignX" title="Same X for all selected parts — they line up with the part you clicked FIRST">column</button>
     <button id="btnAlignY" title="Same Y for all selected parts — they line up with the part you clicked FIRST">row</button>
@@ -29,7 +34,7 @@
     <button id="btnDistY" title="Space out evenly top to bottom (the outermost parts stay put)">↕ space</button>
   </span>
 
-  <label>Grid
+  <label class="sch-only">Grid
     <select id="gridSelect">
       <option value="10">10</option>
       <option value="20" selected>20</option>
@@ -38,19 +43,19 @@
     </select>
   </label>
 
-  <label title="Show or hide the grid dots (stored per project)">
+  <label class="sch-only" title="Show or hide the grid dots (stored per project)">
     <input type="checkbox" id="chkGrid" checked> show
   </label>
 
-  <label title="Show or hide the net names printed along the wires (stored per project, also applies to the SVG export)">
+  <label class="sch-only" title="Show or hide the net names printed along the wires (stored per project, also applies to the SVG export)">
     <input type="checkbox" id="chkNetNames" checked> Net names
   </label>
 
-  <label title="Temporarily hide all notes (not stored)">
+  <label class="sch-only" title="Temporarily hide all notes (not stored)">
     <input type="checkbox" id="chkNotes" checked> Notes
   </label>
 
-  <label title="Ring the pins that are in no net and not declared as no-connect">
+  <label class="sch-only" title="Ring the pins that are in no net and not declared as no-connect">
     <input type="checkbox" id="chkOpen" checked> Open pins
   </label>
 
@@ -79,10 +84,25 @@
     <rect id="band" style="display:none"/>
   </svg>
 
+  <svg id="bbCanvas" xmlns="http://www.w3.org/2000/svg" style="display:none">
+    <g id="bbContent"></g>
+  </svg>
+
+  <div id="bbEmpty" class="bb-only" hidden>
+    <b>No breadboard plan yet.</b><br>
+    Ask the assistant to write one — it uses the <code>write_breadboard</code> tool,
+    and the plan shows up here by itself, checked against the schematic.
+  </div>
+
   <div id="errors" hidden></div>
   <div id="warnings" hidden></div>
 
-  <div id="hint">
+  <div id="bbHint" class="bb-only">
+    Drag or wheel = pan / zoom &nbsp;·&nbsp; <b>point at a hole, lead or wire</b> =
+    light up everything connected to it &nbsp;·&nbsp; <b>F</b> fit
+  </div>
+
+  <div id="hint" class="sch-only">
     Drag = move &nbsp;·&nbsp; <b>drag a frame</b> = select &nbsp;·&nbsp;
     <b>Space</b> or middle-drag = pan &nbsp;·&nbsp;
     <b>R</b> rotate &nbsp;·&nbsp; <b>M</b> mirror &nbsp;·&nbsp; <b>L</b> lock &nbsp;·&nbsp;
