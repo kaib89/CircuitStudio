@@ -1196,3 +1196,8 @@ class ArduinoNano(_Board):
 
 class Pico(_Board):
     BOARD_NAME = "Pico"
+
+
+class Board(_Board):
+    """Any other development board (D1 mini, …); usually from the library."""
+    BOARD_NAME = "Board"

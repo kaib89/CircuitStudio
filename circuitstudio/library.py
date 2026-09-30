@@ -31,7 +31,10 @@ BUILTIN_DIR = Path(__file__).resolve().parent / "library"
 USER_DIR = Path(__file__).resolve().parent.parent / "library"
 
 # Types a library part can have: the ones whose pins or pinout it can supply.
-PART_TYPES = ("ic", "npn", "pnp", "nmos", "pmos", "opamp", "potentiometer")
+PART_TYPES = ("ic", "npn", "pnp", "nmos", "pmos", "opamp", "potentiometer",
+              "esp32", "arduino_nano", "arduino_uno", "board")
+# Types whose pins the part itself defines (and the library therefore lists).
+_PIN_TYPES = ("ic", "esp32", "arduino_nano", "arduino_uno", "board")
 _SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]{0,39}$")
 _SIDES = ("left", "right", "top", "bottom")
 
@@ -43,15 +46,23 @@ GUIDE = """How to add a part to the library (add_library_part):
    for some parts (e.g. 2N2222 variants, BC547 is CBE while 2N3904 is EBC).
 2. Pick the through-hole package that goes on a breadboard: DIP-<n> for ICs,
    TO-92/TO-220 (three leads in a row, written as SIP-3 or TO-92/TO-220).
+   A development board is a wide DIP: DIP-<pins>-<row distance in mil>,
+   e.g. DIP-30-600 for two 15-pin rows 0.6" apart — take the row distance
+   from the board's dimension drawing.
 3. Name the pins as the datasheet does ("1A", "1Y", "VCC", "GND"). Names
    must be unique — suffix repeats with the pin number (NC_4, GAIN_8).
-4. For type 'ic' also give the schematic layout "pins": {"left": inputs and
-   the rest, "right": outputs, "top": positive supply, "bottom": ground or
-   negative supply}. Transistors (npn/pnp/nmos/pmos) have fixed pin names
+4. For type 'ic' and boards (esp32, arduino_nano, arduino_uno, board) also
+   give the schematic layout "pins": {"left": inputs and the rest, "right":
+   outputs, "top": positive supply, "bottom": ground or negative supply}.
+   Transistors (npn/pnp/nmos/pmos) have fixed pin names
    (emitter/base/collector, gate/drain/source) and need no "pins".
+   Pins that are the same net on the part itself (a board's GND pins) go in
+   "ties": [["GND", "GND_2"]] — then any of them may be used.
 5. "pinout": {pin name: physical pin number} for EVERY pin, read from the
-   package drawing seen from the top (DIP: notch left, pin 1 bottom left;
-   TO-92/TO-220: printed side facing you, leads down, pin 1 on the left).
+   package drawing seen from the top (DIP: notch left, pin 1 bottom left,
+   counting right along the bottom row and back along the top; a board the
+   same way with its USB end on the left; TO-92/TO-220: printed side facing
+   you, leads down, pin 1 on the left).
 6. "source": the datasheet URL plus the table or figure you read it from.
    Without a source the part is not added. If anything was ambiguous, say
    so in "notes" and ask the human to double-check.
@@ -134,10 +145,10 @@ def expand(spec: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("type", entry["type"])
     if not out.get("value"):
         out["value"] = entry["name"]
-    for key in ("package", "pinout"):
+    for key in ("package", "pinout", "ties"):
         if key in entry:
             out.setdefault(key, entry[key])
-    if entry["type"] == "ic" and "pins" in entry:
+    if entry["type"] in _PIN_TYPES and "pins" in entry:
         out.setdefault("pins", entry["pins"])
     return out
 
@@ -184,13 +195,14 @@ def validate(entry: Any) -> list[str]:
         errors.append("'aliases' must be a list of names")
     pkg = entry.get("package")
     if not isinstance(pkg, str) or parse_package(pkg) is None:
-        errors.append("'package' must be DIP-<n>, SIP-<n>, TO-92 or TO-220")
-    if ctype == "ic":
+        errors.append("'package' must be DIP-<n>, DIP-<n>-<mil> (a board, e.g. "
+                      "DIP-30-600), SIP-<n>, TO-92 or TO-220")
+    if ctype in _PIN_TYPES:
         pins = entry.get("pins")
         if not isinstance(pins, dict) or set(pins) - set(_SIDES) or not all(
                 isinstance(v, list) for v in pins.values()):
-            errors.append("type 'ic' needs \"pins\": {\"left\": [...], \"right\": "
-                          "[...], \"top\": [...], \"bottom\": [...]}")
+            errors.append(f"type '{ctype}' needs \"pins\": {{\"left\": [...], "
+                          f"\"right\": [...], \"top\": [...], \"bottom\": [...]}}")
     elif "pins" in entry:
         errors.append(f"a '{ctype}' has fixed pin names — leave 'pins' off")
     if not isinstance(entry.get("pinout"), dict):
@@ -199,7 +211,9 @@ def validate(entry: Any) -> list[str]:
         return errors
 
     spec = {"id": "X1", "type": ctype, "package": pkg, "pinout": entry["pinout"]}
-    if ctype == "ic":
+    if entry.get("ties"):
+        spec["ties"] = entry["ties"]
+    if ctype in _PIN_TYPES:
         spec["pins"] = entry["pins"]
     try:
         comp = build_component(spec)
@@ -213,7 +227,7 @@ def validate(entry: Any) -> list[str]:
     fp, fp_errors = footprint(spec, comp)
     errors += [e.replace("Part 'X1': ", "").replace("'X1' ", "the part ")
                for e in fp_errors]
-    if fp is not None and len(fp.numbers) != fp.count and ctype == "ic":
+    if fp is not None and len(fp.numbers) != fp.count and ctype in _PIN_TYPES:
         unused = sorted(set(range(1, fp.count + 1)) - set(fp.numbers.values()))
         errors.append(f"package {pkg} has pins {', '.join(map(str, unused))} that "
                       f"no pin name covers — name them too (e.g. NC_{unused[0]})")

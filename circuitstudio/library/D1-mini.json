@@ -1,0 +1,56 @@
+{
+  "name": "D1-mini",
+  "aliases": [
+    "WemosD1mini",
+    "LOLIN-D1-mini"
+  ],
+  "type": "board",
+  "description": "WEMOS/LOLIN D1 mini (ESP8266), 2x8 pins, rows 0.9\" apart",
+  "package": "DIP-16-900",
+  "pins": {
+    "left": [
+      "A0",
+      "RST",
+      "RX"
+    ],
+    "right": [
+      "D0",
+      "D1",
+      "D2",
+      "D3",
+      "D4",
+      "D5",
+      "D6",
+      "D7",
+      "D8",
+      "TX"
+    ],
+    "top": [
+      "5V",
+      "3V3"
+    ],
+    "bottom": [
+      "GND"
+    ]
+  },
+  "pinout": {
+    "5V": 1,
+    "GND": 2,
+    "D4": 3,
+    "D3": 4,
+    "D2": 5,
+    "D1": 6,
+    "RX": 7,
+    "TX": 8,
+    "RST": 9,
+    "A0": 10,
+    "D0": 11,
+    "D5": 12,
+    "D6": 13,
+    "D7": 14,
+    "D8": 15,
+    "3V3": 16
+  },
+  "source": "https://www.wemos.cc/en/latest/d1/d1_mini_3.1.0.html — pin table and top photo; schematic https://www.wemos.cc/en/latest/_static/files/sch_d1_mini_v3.0.0.pdf (P1 pins 1-16); row distance 22.86 mm from https://www.wemos.cc/en/latest/_static/files/dim_d1_mini_v4.0.0.pdf",
+  "notes": "D0 = GPIO16, D1 = GPIO5, D2 = GPIO4, D3 = GPIO0, D4 = GPIO2, D5 = GPIO14, D6 = GPIO12, D7 = GPIO13, D8 = GPIO15. Version 4 prints GPIO numbers instead and calls 5V 'VBUS' (wired straight to USB). The row distance comes from the V4 drawing; no v3 drawing exists. Clones and v1/v2 not checked."
+}

@@ -134,7 +134,15 @@ class Project:
 
     @property
     def breadboard_png_path(self) -> Path:
+        """Written by Export, next to the SVG."""
         return self.folder / f"{self.name}.breadboard.png"
+
+    @property
+    def breadboard_review_png_path(self) -> Path:
+        """Written by Hand back — the picture the assistant gets to see.
+        Kept apart from the export, so an export never passes for a
+        hand-back."""
+        return self.folder / f"{self.name}.breadboard.review.png"
 
     @property
     def breadboard_backup_path(self) -> Path:

@@ -1,0 +1,94 @@
+{
+  "name": "Arduino-Nano",
+  "aliases": [
+    "Nano",
+    "A000005"
+  ],
+  "type": "arduino_nano",
+  "description": "Arduino Nano (ATmega328P), 2x15 pins, rows 0.6\" apart",
+  "package": "DIP-30-600",
+  "pins": {
+    "left": [
+      "A0",
+      "A1",
+      "A2",
+      "A3",
+      "A4",
+      "A5",
+      "A6",
+      "A7",
+      "AREF",
+      "RST",
+      "RST_2"
+    ],
+    "right": [
+      "D0",
+      "D1",
+      "D2",
+      "D3",
+      "D4",
+      "D5",
+      "D6",
+      "D7",
+      "D8",
+      "D9",
+      "D10",
+      "D11",
+      "D12",
+      "D13"
+    ],
+    "top": [
+      "5V",
+      "3V3",
+      "VIN"
+    ],
+    "bottom": [
+      "GND",
+      "GND_2"
+    ]
+  },
+  "pinout": {
+    "D13": 1,
+    "3V3": 2,
+    "AREF": 3,
+    "A0": 4,
+    "A1": 5,
+    "A2": 6,
+    "A3": 7,
+    "A4": 8,
+    "A5": 9,
+    "A6": 10,
+    "A7": 11,
+    "5V": 12,
+    "RST": 13,
+    "GND": 14,
+    "VIN": 15,
+    "D1": 16,
+    "D0": 17,
+    "RST_2": 18,
+    "GND_2": 19,
+    "D2": 20,
+    "D3": 21,
+    "D4": 22,
+    "D5": 23,
+    "D6": 24,
+    "D7": 25,
+    "D8": 26,
+    "D9": 27,
+    "D10": 28,
+    "D11": 29,
+    "D12": 30
+  },
+  "ties": [
+    [
+      "GND",
+      "GND_2"
+    ],
+    [
+      "RST",
+      "RST_2"
+    ]
+  ],
+  "source": "https://docs.arduino.cc/resources/datasheets/A000005-datasheet.pdf — p.1 photo (component side, USB left), p.11 pin tables 5.1/5.2, p.12 dimension drawing (15.24 mm between rows); cross-checked with https://docs.arduino.cc/resources/pinouts/A000005-full-pinout.pdf and the A000005 schematic (J1/J2)",
+  "notes": "Silkscreen: D0 = RX0, D1 = TX1, AREF = REF, 3V3 = 3.3V. The two GND and the two RST pins are the same net. Genuine Nano V3 (A000005); clones were not checked."
+}

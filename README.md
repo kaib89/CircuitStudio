@@ -235,7 +235,10 @@ DIP that does not straddle the channel — is not written at all. Problems are
 ringed on the board, listed at the bottom right and counted on the
 **Breadboard** button. Point at any hole, lead or wire and everything
 electrically connected to it lights up, with its net and pins in the status
-bar. **Export SVG** writes `<name>.breadboard.svg` while this view is shown.
+bar. **Export SVG** writes `<name>.breadboard.svg` and a matching `.png`
+while this view is shown. The toolbar also sets the board size (half with 30
+columns, full with 63) and whether the rails are split in the middle, as on
+many full-size boards — both undoable like any other change.
 
 ### Rearranging the board
 
@@ -326,6 +329,18 @@ package and datasheet pinout:
 { "id": "U1", "part": "74HCU04" }
 { "id": "Q1", "part": "BC547" }
 ```
+
+Development boards are in there too — `Arduino-Nano`, `D1-mini` (ESP8266) and
+`ESP32-DevKitC-V4` — as wide packages (`DIP-30-600`: two rows of 15, 0.6"
+apart) that straddle the channel like a chip, with their GND pins joined
+(`"ties"`), so any of them may be used. The Pico's header is built in as
+before. A board covers the holes under its body; nothing can be plugged in
+there. Without a package, a board type stays beside the breadboard and only
+its leads go in. The ESP32-DevKitC is 1.0" wide and leaves just one free row
+on one side of a standard board. The popular DOIT ESP32 DevKit V1 is not
+built in: its pin order is documented by DOIT, but which header sits on which
+side and the row distance only by third-party measurements — measure your
+board and add it with `add_library_part`.
 
 Pins, package and pinout come from the library; anything the circuit states
 itself (a value, a second-source pinout) wins. `list_library` shows what is

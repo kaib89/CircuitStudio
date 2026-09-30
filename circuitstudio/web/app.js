@@ -1094,8 +1094,19 @@ document.getElementById('btnReroute').addEventListener('click', async () => {
 
 document.getElementById('btnExport').addEventListener('click', async () => {
   try {
-    const res = await api('/api/export', mode === 'breadboard' ? { what: 'breadboard' } : {});
-    setStatus('Saved: ' + res.path);
+    if (mode !== 'breadboard') {
+      const res = await api('/api/export', {});
+      setStatus('Saved: ' + res.path);
+      return;
+    }
+    // The breadboard also goes out as a PNG — handy for a chat or a forum.
+    let png = null;
+    try {
+      png = await svgToPng((await api('/api/svg', { what: 'breadboard' })).svg);
+    } catch (err) { /* the SVG alone still gets written */ }
+    const res = await api('/api/export', png ? { what: 'breadboard', png }
+                                             : { what: 'breadboard' });
+    setStatus('Saved: ' + res.path + (res.png ? ' and ' + res.png : ''));
   } catch (err) { setStatus('Error: ' + err.message); }
 });
 
@@ -1236,6 +1247,8 @@ const BB_SPAN = { resistor: 4, inductor: 4, diode: 4, zener: 4, fuse: 4,
 const BB_OFFBOARD = new Set(['speaker', 'battery', 'source_dc', 'source_ac',
                              'connector', 'esp32', 'rpi', 'arduino_uno', 'arduino_nano']);
 const bbTray = document.getElementById('bbTray');
+const bbSize = document.getElementById('bbSize');
+const bbSplit = document.getElementById('bbSplit');
 const bbGhost = document.getElementById('bbGhost');
 const bbUndo = [];
 const bbRedo = [];
@@ -1475,7 +1488,47 @@ function bbSelect(sel) {
   bbApplySelection();
 }
 
+/** Board size and split rails, shown for the plan on screen. */
+function renderBoardControls() {
+  const has = !!(bb && bb.exists);
+  bbSize.disabled = bbSplit.disabled = !has;
+  if (!has) return;
+  const cols = String(bb.columns);
+  if (![...bbSize.options].some(o => o.value === cols)) {
+    bbSize.insertAdjacentHTML('beforeend', `<option value="${cols}">${cols} columns</option>`);
+  }
+  bbSize.value = cols;
+  bbSplit.checked = !!((bb.plan || {}).board || {}).split_rails;
+}
+
+async function changeBoard(patch, msg) {
+  // Hand the keyboard back, or Ctrl+Z would go to the control, not the board.
+  bbSize.blur();
+  bbSplit.blur();
+  const plan = planCopy();
+  plan.board = { ...(plan.board || {}), ...patch };
+  bbView = null;       // the board changed size: fit it again
+  await commitPlan(plan, msg);
+  fitBb();
+}
+
+bbSize.addEventListener('change', async () => {
+  const n = parseInt(bbSize.value, 10);
+  const beyond = Object.keys(bb.used || {}).filter(h => parseHole(h).col > n).length;
+  if (beyond && !confirm(`${beyond} hole(s) in use lie beyond column ${n} and ` +
+                         `would be off the board. Change the size anyway?`)) {
+    renderBoardControls();
+    return;
+  }
+  await changeBoard({ columns: n }, `Board: ${n} columns.`);
+});
+
+bbSplit.addEventListener('change', () => changeBoard(
+  { split_rails: bbSplit.checked },
+  bbSplit.checked ? 'Rails split in the middle.' : 'Rails run the full length.'));
+
 function renderBreadboard() {
+  renderBoardControls();
   const n = bbProblems().length;
   btnModeBb.innerHTML = 'Breadboard' + (n ? `<span class="badge">${n}</span>` : '');
   btnModeBb.title = !bb || !bb.exists

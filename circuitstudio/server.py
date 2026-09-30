@@ -359,7 +359,19 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     proj.breadboard_svg_path.write_text(
                         BreadboardScene(proj).to_svg(), encoding="utf-8")
-                    self._json({"path": str(proj.breadboard_svg_path)})
+                    out = {"path": str(proj.breadboard_svg_path)}
+                    # The browser rasterises the SVG (see /api/review) and
+                    # sends the picture along.
+                    png = body.get("png") if isinstance(body, dict) else None
+                    if isinstance(png, str):
+                        try:
+                            data = base64.b64decode(png.split(",", 1)[-1], validate=True)
+                        except (binascii.Error, ValueError):
+                            data = b""
+                        if data.startswith(PNG_MAGIC):
+                            proj.breadboard_png_path.write_bytes(data)
+                            out["png"] = str(proj.breadboard_png_path)
+                    self._json(out)
                     return
                 svg = Scene(proj).to_svg()
                 proj.save_routes()
@@ -405,7 +417,7 @@ class Handler(BaseHTTPRequestHandler):
                     proj.breadboard_svg_path.write_text(
                         BreadboardScene(proj).to_svg(), encoding="utf-8")
                     if data:
-                        proj.breadboard_png_path.write_bytes(data)
+                        proj.breadboard_review_png_path.write_bytes(data)
                     info = proj.mark_breadboard_reviewed()
                     proj.save_layout()
                     payload = self.state.scene_payload()

@@ -104,6 +104,49 @@ class AutoplaceTests(unittest.TestCase):
         self.assertTrue(any(f.startswith("Q1:") and "datasheet" in f for f in failed))
 
 
+def board_led(part: str, pin: str, gnd: str = "GND") -> dict:
+    return {"components": [{"id": "U1", "part": part},
+                           {"id": "R1", "type": "resistor"},
+                           {"id": "D1", "type": "led"}],
+            "nets": [{"name": "led", "pins": [f"U1.{pin}", "R1.1"]},
+                     {"name": "a", "pins": ["R1.2", "D1.anode"]},
+                     {"name": "GND", "pins": [f"U1.{gnd}", "D1.cathode"]}]}
+
+
+class BoardTests(unittest.TestCase):
+    def test_boards_straddle_the_channel(self) -> None:
+        # Row of pin 1 follows from the row distance: 0.6" Nano sits in d/h,
+        # 0.9" D1 mini and 1.0" ESP32 in b and above.
+        for part, pin, row in (("Arduino-Nano", "D13", "d"), ("D1-mini", "D4", "b"),
+                               ("ESP32-DevKitC", "IO2", "b")):
+            circuit = board_led(part, pin)
+            self.assertEqual(mcp_server._validate(circuit), [], part)
+            plan, _, failed = autoplace(circuit, None, "all")
+            self.assertEqual(failed, [], part)
+            self.assertEqual(check(plan, circuit), [], part)
+            self.assertEqual(plan["parts"]["U1"]["anchor"][0], row, part)
+
+    def test_board_pins_joined_on_the_board(self) -> None:
+        # The Nano's second GND pin is the same net as the first: using
+        # either one is fine, and no wire between them is needed.
+        circuit = board_led("Arduino-Nano", "D13", gnd="GND_2")
+        circuit["nets"][2]["pins"].append("U1.GND")
+        plan = {"parts": {"U1": {"anchor": "d2"},
+                          "R1": {"legs": {"1": "c2", "2": "c18"}},
+                          "D1": {"legs": {"anode": "b18", "cathode": "b15"}}}}
+        self.assertEqual(check(plan, circuit), [])     # D1 into GND's column 15
+
+    def test_nothing_goes_under_a_board(self) -> None:
+        circuit = board_led("Arduino-Nano", "D13")
+        plan = {"parts": {"U1": {"anchor": "d2"},
+                          "R1": {"legs": {"1": "c2", "2": "f20"}}}}
+        errors = Breadboard(plan, circuit).structure_errors
+        self.assertEqual(errors, [])
+        plan["parts"]["R1"]["legs"]["2"] = "f5"          # under the Nano
+        self.assertTrue(any("covered by U1" in e
+                            for e in Breadboard(plan, circuit).structure_errors))
+
+
 class AutoplaceToolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = Path(tempfile.mkdtemp())
