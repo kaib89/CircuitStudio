@@ -84,6 +84,19 @@ class HoleTests(unittest.TestCase):
             self.assertIsNone(parse_hole(bad, 63), bad)
 
 
+class PackageTests(unittest.TestCase):
+    def test_wide_packages(self) -> None:
+        from circuitstudio.footprints import package_name, parse_package
+        self.assertEqual(parse_package("DIP-14"), ("DIP", 14, 3))
+        self.assertEqual(parse_package("DIP-30-600"), ("DIP", 30, 6))
+        self.assertEqual(parse_package("dip-38-1000"), ("DIP", 38, 10))
+        self.assertEqual(parse_package("TO-92"), ("SIP", 3, 0))
+        for bad in ("DIP-30-650", "DIP-30-200", "SIP-3-300", "DIP-7"):
+            self.assertIsNone(parse_package(bad), bad)
+        self.assertEqual(package_name("DIP", 30, 6), "DIP-30-600")
+        self.assertEqual(package_name("DIP", 14, 3), "DIP-14")
+
+
 class CheckTests(unittest.TestCase):
     def test_correct_plan_is_clean(self) -> None:
         bb = Breadboard(TIMER_PLAN, TIMER)
@@ -345,6 +358,17 @@ class EditorTests(unittest.TestCase):
         bb = self.post("/api/breadboard", {"plan": plan})["breadboard"]
         self.assertEqual([u["id"] for u in bb["unplaced"]], ["R1"])
         self.assertEqual(bb["unplaced"][0]["pins"], ["1", "2"])
+
+    def test_export_writes_svg_and_png(self) -> None:
+        from circuitstudio.server import PNG_MAGIC
+        import base64
+        png = "data:image/png;base64," + base64.b64encode(PNG_MAGIC + b"x").decode()
+        out = self.post("/api/export", {"what": "breadboard", "png": png})
+        self.assertTrue((self.dir / "t.breadboard.svg").exists())
+        self.assertTrue((self.dir / "t.breadboard.png").exists())
+        self.assertIn("png", out)
+        # An export is not a hand-back: the assistant's picture stays apart.
+        self.assertFalse((self.dir / "t.breadboard.review.png").exists())
 
     def test_breadboard_hand_back(self) -> None:
         payload = self.post("/api/review", {"what": "breadboard"})

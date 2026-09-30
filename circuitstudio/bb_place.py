@@ -90,7 +90,7 @@ class Placer:
         for part in bb.parts.values():
             for p in part.pins:
                 self._take(p.hole.name, self.net_of.get(p.ref or ""))
-                if part.ctype == "pico":
+                if part.fp is not None and part.fp.board:
                     self.board_nodes.add(self.node(p.hole.name))
             if part.anchor is not None:
                 self._note_chip([p.hole.name for p in part.pins])
@@ -203,14 +203,13 @@ class Placer:
                 and is_physical(str(spec.get("type", "")).lower())]
         rigid, legs = [], []
         for cid in todo:
-            if str(self.specs[cid].get("type", "")).lower() in OFFBOARD_TYPES:
-                legs.append(cid)
-                continue
             fp, errors = footprint(self.specs[cid], self.comps[cid])
-            if fp is None:
+            if fp is not None and fp.kind == RIGID:
+                rigid.append(cid)       # a board with a package sits on the board
+            elif str(self.specs[cid].get("type", "")).lower() in OFFBOARD_TYPES:
+                legs.append(cid)
+            elif fp is None:
                 self.failed.append(f"{cid}: {errors[0]}")
-            elif fp.kind == RIGID:
-                rigid.append(cid)
             else:
                 legs.append(cid)
         self._place_rigid_parts(rigid)
@@ -249,13 +248,13 @@ class Placer:
         cursor = max(taken) + 3 if taken else None
         for cid in self._order(ids):
             fp, _ = footprint(self.specs[cid], self.comps[cid])
-            row = "c" if fp.package == "Pico" else "e"
+            row = self._anchor_row(fp)
             width = max(dx for dx, _ in fp.offsets.values()) + 1
             gap = min(8, 2 + self._attached(cid) // 2)
             if cursor is None:
                 # A board hangs its USB end over the edge; a chip gets room on
                 # its left for the parts that go there.
-                cursor = 2 if fp.package == "Pico" else 1 + min(gap, 5)
+                cursor = 2 if fp.board else 1 + min(gap, 5)
             placed = False
             # First try right of what is there, then any gap on the board.
             for start in list(range(cursor, self.cols + 1)) + list(range(1, cursor)):
@@ -266,7 +265,7 @@ class Placer:
                 for num, h in holes.items():
                     name = fp.name_of(num)
                     self._take(h, self.net_of.get(f"{cid}.{name}") if name else None)
-                    if fp.package == "Pico":
+                    if fp.board:
                         self.board_nodes.add(self.node(h))
                 self._note_chip(list(holes.values()))
                 for h in covered_holes([parse_hole(h, self.cols)
@@ -278,6 +277,23 @@ class Placer:
                 break
             if not placed:
                 self.failed.append(f"{cid}: no room left on a {self.cols}-column board")
+
+    @staticmethod
+    def _anchor_row(fp) -> str:
+        """Row for pin 1 so the part straddles the channel and leaves as many
+        free rows as possible on both sides: e for a DIP, c for a Pico, …"""
+        span = max(-dy for _, dy in fp.offsets.values())
+        if span == 0:
+            return "e"          # a single row (SIP): right next to the channel
+        best, best_free = "e", -1
+        for row in "edcba":
+            top = ROW_Y[row] - span
+            if top not in ROW_Y.values() or top > ROW_Y["f"]:
+                continue
+            free = min(top - ROW_Y["j"], ROW_Y["a"] - ROW_Y[row])
+            if free > best_free:
+                best, best_free = row, free
+        return best
 
     def _rigid_holes(self, fp, row: str, start: int) -> dict[int, str] | None:
         out = {}

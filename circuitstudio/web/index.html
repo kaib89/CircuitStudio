@@ -26,6 +26,15 @@
   <button id="btnExport" title="Write the SVG of the current view next to the project files">Export SVG</button>
   <button id="btnBbRest" class="bb-only" title="Put every part that is not on the board yet onto it — what is already placed stays">Place the rest</button>
   <button id="btnBbAll" class="bb-only" title="Lay the whole breadboard out afresh (Ctrl+Z brings the old one back)">Re-place all</button>
+  <label class="bb-only" title="Board size — anything beyond the new edge is reported">Board
+    <select id="bbSize">
+      <option value="30">half (30)</option>
+      <option value="63">full (63)</option>
+    </select>
+  </label>
+  <label class="bb-only" title="Rails interrupted in the middle, as on many full-size boards">
+    <input type="checkbox" id="bbSplit"> split rails
+  </label>
   <button id="btnHandBack" title="Mark the arrangement as finished and render a picture the assistant can look at">Hand back ✓</button>
 
   <span class="group sch-only" id="alignGroup">

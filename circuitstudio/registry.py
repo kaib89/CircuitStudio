@@ -15,7 +15,7 @@ from .symbols import (
     OpAmp, NE555, IC, SourceDC, SourceAC, Battery,
     Switch, Potentiometer, Crystal, Speaker, Fuse,
     Ground, VCC, VDD, Connector, Label,
-    RPi, ESP32, ArduinoUno, ArduinoNano, Pico,
+    RPi, ESP32, ArduinoUno, ArduinoNano, Pico, Board,
 )
 
 # Types constructed as Cls(comp_id, value)
@@ -54,6 +54,7 @@ _BOARDS: dict[str, type[Component]] = {
     "arduino_uno": ArduinoUno,
     "arduino_nano": ArduinoNano,
     "pico": Pico,
+    "board": Board,
 }
 
 KNOWN_TYPES: list[str] = sorted(

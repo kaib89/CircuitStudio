@@ -1,0 +1,106 @@
+{
+  "name": "ESP32-DevKitC-V4",
+  "aliases": [
+    "ESP32-DevKitC"
+  ],
+  "type": "esp32",
+  "description": "Espressif ESP32-DevKitC V4, 2x19 pins, rows 1.0\" apart",
+  "package": "DIP-38-1000",
+  "pins": {
+    "left": [
+      "EN",
+      "VP",
+      "VN",
+      "IO34",
+      "IO35",
+      "CLK",
+      "D0",
+      "D1",
+      "D2",
+      "D3",
+      "CMD"
+    ],
+    "right": [
+      "IO0",
+      "IO2",
+      "IO4",
+      "IO5",
+      "IO12",
+      "IO13",
+      "IO14",
+      "IO15",
+      "IO16",
+      "IO17",
+      "IO18",
+      "IO19",
+      "IO21",
+      "IO22",
+      "IO23",
+      "IO25",
+      "IO26",
+      "IO27",
+      "IO32",
+      "IO33",
+      "RX",
+      "TX"
+    ],
+    "top": [
+      "3V3",
+      "5V"
+    ],
+    "bottom": [
+      "GND",
+      "GND_2",
+      "GND_3"
+    ]
+  },
+  "pinout": {
+    "CLK": 1,
+    "D0": 2,
+    "D1": 3,
+    "IO15": 4,
+    "IO2": 5,
+    "IO0": 6,
+    "IO4": 7,
+    "IO16": 8,
+    "IO17": 9,
+    "IO5": 10,
+    "IO18": 11,
+    "IO19": 12,
+    "GND": 13,
+    "IO21": 14,
+    "RX": 15,
+    "TX": 16,
+    "IO22": 17,
+    "IO23": 18,
+    "GND_2": 19,
+    "3V3": 20,
+    "EN": 21,
+    "VP": 22,
+    "VN": 23,
+    "IO34": 24,
+    "IO35": 25,
+    "IO32": 26,
+    "IO33": 27,
+    "IO25": 28,
+    "IO26": 29,
+    "IO27": 30,
+    "IO14": 31,
+    "IO12": 32,
+    "GND_3": 33,
+    "IO13": 34,
+    "D2": 35,
+    "D3": 36,
+    "CMD": 37,
+    "5V": 38
+  },
+  "ties": [
+    [
+      "GND",
+      "GND_2",
+      "GND_3"
+    ]
+  ],
+  "source": "https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32/esp32-devkitc/user_guide.html — Header Block tables J2/J3 and pin layout image; row distance 25.40 mm from https://dl.espressif.com/dl/schematics/esp32_devkitc_v4_dimensions.pdf; schematic https://dl.espressif.com/dl/schematics/esp32_devkitc_v4_sch.pdf",
+  "notes": "VP = GPIO36, VN = GPIO39, RX = GPIO3, TX = GPIO1, EN = CHIP_PU. CLK, D0-D3 and CMD (GPIO6-11) belong to the SPI flash — do not use them. IO16/IO17 are free only with WROOM/SOLO-1 modules. At 1.0\" between its rows the board leaves just one free row on one side of a standard breadboard; many people put it across two boards."
+}

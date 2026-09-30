@@ -8,6 +8,7 @@ node it belongs to, so pointing at one lights up everything connected to it.
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
@@ -21,6 +22,9 @@ BOARD_TOP, BOARD_BOTTOM = -4.4, 15.4
 OFFBOARD_GAP = 2.8            # pitches between board edge and off-board parts
 
 BOARD_FILL = "#F4F1EA"
+_BOARD_COLORS = {"pico": "#2E7D4F", "esp32": "#1F2A36", "arduino_nano": "#1B5E9E",
+                 "arduino_uno": "#1B6E8E"}
+_POWER_LABEL = re.compile(r"^(GND|3V3|3\.3V|5V|VIN|VBUS|VSYS|VCC)", re.IGNORECASE)
 _WIRE_PALETTE = ["#1F9E89", "#8E44AD", "#E67E22", "#2E86DE", "#16A085",
                  "#D35400", "#6C5CE7", "#B7950B"]
 _LED_COLORS = [(("red", "rot"), "#E03131"), (("green", "grün", "gruen"), "#2F9E44"),
@@ -187,9 +191,10 @@ class BreadboardScene:
                 f"{pts[1].hole.name}"
         out = [f'<g class="bbpart" data-part="{_esc(part.cid)}"><title>{_esc(title)}</title>']
 
-        if fp.package == "Pico":
+        if fp.board:
             m_long, m_short = 0.9 * P, 0.75 * P
-            fill, text_fill, pad_fill = "#2E7D4F", "#FFFFFF", "#E0B84C"
+            fill, text_fill, pad_fill = (_BOARD_COLORS.get(part.ctype, "#2B4F6E"),
+                                         "#FFFFFF", "#E0B84C")
         elif fp.package.startswith("DIP"):
             m_long, m_short = 0.45 * P, 0.4 * P
             fill, text_fill, pad_fill = "#232323", "#FFFFFF", "#CCCCCC"
@@ -206,13 +211,13 @@ class BreadboardScene:
                    f'height="{_f(y1 - y0)}" rx="4" fill="{fill}" '
                    f'stroke="#111" stroke-width="1"/>')
 
-        # Pin-1 end: the notch of a DIP, the USB socket of a Pico.
+        # Pin-1 end: the notch of a DIP, the USB socket of a board.
         ux, uy = (1.0, 0.0) if horizontal else (0.0, 1.0)
         if (bx - ax) * ux + (by - ay) * uy < 0:
             ux, uy = -ux, -uy
         half = ((x1 - x0) if horizontal else (y1 - y0)) / 2
         ex, ey = cx - ux * half, cy - uy * half
-        if fp.package == "Pico":
+        if fp.board:
             w, h = (1.3 * P, 2.0 * P) if horizontal else (2.0 * P, 1.3 * P)
             ex -= ux * w / 2 if horizontal else 0
             ey -= uy * h / 2 if not horizontal else 0
@@ -224,17 +229,12 @@ class BreadboardScene:
 
         for num, p in sorted(pts.items()):
             out.append(self._pad(p, pad_fill))
-            if fp.package.startswith("DIP"):
-                px_, py_ = hole_xy(p.hole)
-                dx, dy = (0, 1) if horizontal else (1, 0)
-                if (cx - px_) * dx + (cy - py_) * dy < 0:
-                    dx, dy = -dx, -dy
-                out.append(f'<text x="{_f(px_ + dx * 9)}" y="{_f(py_ + dy * 9 + 3)}" '
-                           f'text-anchor="middle" font-family="sans-serif" font-size="7" '
-                           f'fill="#BBBBBB">{num}</text>')
-            elif fp.package == "Pico":
-                name = fp.name_of(num)
-                label = name or (fp.labels.get(num) if fp.labels.get(num) == "GND" else "")
+            if fp.board:
+                # Only what matters on a crowded header: the pins in use, and
+                # the power pins.
+                name = fp.name_of(num) if p.ref in self.bb.net_of else None
+                power = fp.labels.get(num, "")
+                label = name or (power if _POWER_LABEL.match(power) else "")
                 if label:
                     px_, py_ = hole_xy(p.hole)
                     dx, dy = (0, 1) if horizontal else (1, 0)
@@ -243,9 +243,17 @@ class BreadboardScene:
                     out.append(f'<text x="{_f(px_ + dx * 13)}" y="{_f(py_ + dy * 13 + 3)}" '
                                f'text-anchor="middle" font-family="sans-serif" '
                                f'font-size="7" fill="#FFFFFF">{_esc(label)}</text>')
+            elif fp.package.startswith("DIP"):
+                px_, py_ = hole_xy(p.hole)
+                dx, dy = (0, 1) if horizontal else (1, 0)
+                if (cx - px_) * dx + (cy - py_) * dy < 0:
+                    dx, dy = -dx, -dy
+                out.append(f'<text x="{_f(px_ + dx * 9)}" y="{_f(py_ + dy * 9 + 3)}" '
+                           f'text-anchor="middle" font-family="sans-serif" font-size="7" '
+                           f'fill="#BBBBBB">{num}</text>')
 
         main = part.value or part.cid
-        size = 14 if fp.package == "Pico" else 11
+        size = 14 if fp.board else 11
         if fp.package.startswith("SIP") and part.ctype != "potentiometer":
             # A TO-92 body is too small for text; the ID sits next to it.
             out.append(self._outside_label(part.cid, (cx, y0 - 5) if horizontal
@@ -255,7 +263,7 @@ class BreadboardScene:
             out.append(f'<text x="{_f(cx)}" y="{_f(cy + size / 3)}" text-anchor="middle" '
                        f'font-family="sans-serif" font-size="{size}" font-weight="bold" '
                        f'fill="{text_fill}">{_esc(main)}</text>')
-            if fp.package == "Pico":
+            if fp.board:
                 out.append(f'<text x="{_f(cx)}" y="{_f(cy + size / 3 + 15)}" '
                            f'text-anchor="middle" font-family="sans-serif" font-size="9" '
                            f'fill="#DDEEDD">{_esc(part.cid)} · pin 1 in '

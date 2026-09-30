@@ -36,7 +36,8 @@ LEGS = "legs"
 DIP_ROW_GAP = 3
 PICO_ROW_GAP = 7
 
-_PACKAGE = re.compile(r"^(DIP|SIP)-?(\d+)$", re.IGNORECASE)
+# DIP-14 is 0.3" wide; boards are wider DIPs: DIP-30-600 (0.6"), DIP-38-900.
+_PACKAGE = re.compile(r"^(DIP|SIP)-?(\d+)(?:-(\d{3,4}))?$", re.IGNORECASE)
 _PACKAGE_ALIASES = {"TO-92": "SIP-3", "TO92": "SIP-3",
                     "TO-220": "SIP-3", "TO220": "SIP-3"}
 
@@ -58,6 +59,11 @@ _RIGID_TYPES: dict[str, tuple[str | None, dict[str, int] | None]] = {
     # Inline pots and trimmers have the wiper in the middle.
     "potentiometer": ("SIP-3", {"1": 1, "wiper": 2, "2": 3}),
 }
+
+# Board symbols with caller-defined pins. With a package (usually from the
+# library) they sit on the breadboard like a wide chip; without one they
+# stay beside it and are wired lead by lead.
+BOARD_TYPES = frozenset({"esp32", "arduino_nano", "arduino_uno", "rpi", "board"})
 
 # ── Raspberry Pi Pico ─────────────────────────────────────────────────────────
 # Physical header pins of the Pico / Pico W / Pico 2 / Pico 2 W (identical on
@@ -102,6 +108,7 @@ class Footprint:
     numbers: dict[str, int] = field(default_factory=dict)   # name -> pin no.
     offsets: dict[int, tuple[int, int]] = field(default_factory=dict)
     ties: list[frozenset[int]] = field(default_factory=list)  # joined on the part
+    board: bool = False                                       # drawn as a board
     labels: dict[int, str] = field(default_factory=dict)      # printed pin names
 
     def name_of(self, number: int) -> str | None:
@@ -118,26 +125,41 @@ class Footprint:
         return f"pin {number} ({text})" if text else f"pin {number}"
 
 
-def parse_package(text: str) -> tuple[str, int] | None:
-    """'DIP-14' -> ('DIP', 14); aliases like 'TO-92' map to 'SIP-3'."""
+def parse_package(text: str) -> tuple[str, int, int] | None:
+    """'DIP-14' -> ('DIP', 14, 3); 'DIP-30-600' -> ('DIP', 30, 6), the last
+    number being the row distance in pitches; 'TO-92' -> ('SIP', 3, 0)."""
     text = _PACKAGE_ALIASES.get(text.strip().upper(), text.strip())
     m = _PACKAGE.match(text)
     if not m:
         return None
-    kind, n = m.group(1).upper(), int(m.group(2))
+    kind, n, mil = m.group(1).upper(), int(m.group(2)), m.group(3)
     if n < 1 or n > 64 or (kind == "DIP" and (n < 4 or n % 2)):
         return None
-    return kind, n
+    if kind == "SIP":
+        return None if mil else (kind, n, 0)
+    if mil is None:
+        return kind, n, DIP_ROW_GAP
+    mil = int(mil)
+    if mil % 100 or not 300 <= mil <= 1000:
+        return None
+    return kind, n, mil // 100
 
 
-def _offsets(kind: str, n: int) -> dict[int, tuple[int, int]]:
+def package_name(kind: str, n: int, gap: int) -> str:
+    if kind == "SIP":
+        return f"SIP-{n}"
+    return f"DIP-{n}" if gap == DIP_ROW_GAP else f"DIP-{n}-{gap * 100}"
+
+
+def _offsets(kind: str, n: int, gap: int = DIP_ROW_GAP) -> dict[int, tuple[int, int]]:
     if kind == "SIP":
         return {i: (i - 1, 0) for i in range(1, n + 1)}
-    # DIP, seen from above with the notch on the left: pin 1 bottom left,
-    # counting to the right along the bottom row and back along the top.
+    # DIP, seen from above with the notch (a board: its USB end) on the left:
+    # pin 1 bottom left, counting to the right along the bottom row and back
+    # along the top.
     half = n // 2
     out = {i: (i - 1, 0) for i in range(1, half + 1)}
-    out.update({half + j: (half - j, -DIP_ROW_GAP) for j in range(1, half + 1)})
+    out.update({half + j: (half - j, -gap) for j in range(1, half + 1)})
     return out
 
 
@@ -147,6 +169,10 @@ def is_physical(ctype: str) -> bool:
 
 def is_rigid_type(ctype: str) -> bool:
     return ctype in _RIGID_TYPES or ctype == "pico"
+
+
+def takes_package(ctype: str) -> bool:
+    return is_rigid_type(ctype) or ctype in BOARD_TYPES
 
 
 def check_spec(spec: dict[str, Any], comp: Component) -> list[str]:
@@ -164,13 +190,14 @@ def check_spec(spec: dict[str, Any], comp: Component) -> list[str]:
         return []
     if not is_physical(ctype):
         return [f"Part '{cid}': '{ctype}' is a net symbol, it has no package or pinout"]
-    if not is_rigid_type(ctype):
+    if not takes_package(ctype):
         return [f"Part '{cid}': a {ctype} is placed lead by lead on the breadboard, "
                 f"so 'package' and 'pinout' do not apply"]
     if ctype == "pico" and has_pkg:
         return [f"Part '{cid}': the Pico's package is built in — leave 'package' off"]
     _, errors = footprint(spec, comp)
-    if ctype == "ic" and has_pkg != has_map and not from_library:
+    if (ctype == "ic" or ctype in BOARD_TYPES) and has_pkg != has_map \
+            and not from_library:
         errors.insert(0, f"Part '{cid}': 'package' and 'pinout' go together — "
                          f"give both")
     return errors
@@ -188,10 +215,14 @@ def footprint(spec: dict[str, Any], comp: Component) -> tuple[Footprint | None, 
                       f"go on the breadboard"]
     if ctype == "pico":
         return _pico(spec, comp)
-    if not is_rigid_type(ctype):
+    if ctype in BOARD_TYPES:
+        if not spec.get("package"):
+            return Footprint(kind=LEGS), []
+        default_pkg, default_map = None, None
+    elif not is_rigid_type(ctype):
         return Footprint(kind=LEGS), []
-
-    default_pkg, default_map = _RIGID_TYPES[ctype]
+    else:
+        default_pkg, default_map = _RIGID_TYPES[ctype]
     pkg_text = str(spec.get("package") or default_pkg or "")
     if not pkg_text:
         return None, [f"'{cid}' needs 'package' (e.g. \"DIP-14\") and 'pinout' "
@@ -200,8 +231,9 @@ def footprint(spec: dict[str, Any], comp: Component) -> tuple[Footprint | None, 
     parsed = parse_package(pkg_text)
     if parsed is None:
         return None, [f"Part '{cid}': unknown package '{pkg_text}'. Use DIP-<n> "
-                      f"(even n), SIP-<n>, or TO-92/TO-220 for three pins in a row"]
-    kind, count = parsed
+                      f"(even n; a board: DIP-<n>-<row distance in mil>, e.g. "
+                      f"DIP-30-600), SIP-<n>, or TO-92/TO-220 for three pins in a row"]
+    kind, count, gap = parsed
 
     raw = spec.get("pinout")
     if raw is None:
@@ -213,10 +245,32 @@ def footprint(spec: dict[str, Any], comp: Component) -> tuple[Footprint | None, 
                           f"the breadboard"]
         raw = default_map
     numbers, errors = _read_pinout(cid, raw, names, count)
-    if errors:
-        return None, errors
-    return Footprint(kind=RIGID, package=f"{kind}-{count}", count=count,
-                     numbers=numbers, offsets=_offsets(kind, count)), []
+    ties, tie_errors = _read_ties(cid, spec.get("ties"), numbers)
+    if errors or tie_errors:
+        return None, errors + tie_errors
+    board = ctype in BOARD_TYPES
+    return Footprint(kind=RIGID, package=package_name(kind, count, gap), count=count,
+                     numbers=numbers, offsets=_offsets(kind, count, gap), ties=ties,
+                     board=board,
+                     labels={n: name for name, n in numbers.items()} if board else {}), []
+
+
+def _read_ties(cid: str, raw: Any, numbers: dict[str, int]) -> tuple[list[frozenset[int]], list[str]]:
+    """Pins joined on the part itself, e.g. a board's GND pins."""
+    if not raw:
+        return [], []
+    if not isinstance(raw, list) or not all(isinstance(g, list) for g in raw):
+        return [], [f"Part '{cid}': 'ties' must be a list of pin-name lists, e.g. "
+                    f"[[\"GND\", \"GND_2\"]]"]
+    out, errors = [], []
+    for group in raw:
+        missing = [str(n) for n in group if str(n) not in numbers]
+        if missing:
+            errors.append(f"Part '{cid}': 'ties' names unknown pin(s) {', '.join(missing)}")
+            continue
+        if len(group) > 1:
+            out.append(frozenset(numbers[str(n)] for n in group))
+    return out, errors
 
 
 def _read_pinout(cid: str, raw: Any, names: list[str],
@@ -290,7 +344,7 @@ def _pico(spec: dict[str, Any], comp: Component) -> tuple[Footprint | None, list
     offsets.update({i: (40 - i, -PICO_ROW_GAP) for i in range(21, 41)})
     return Footprint(kind=RIGID, package="Pico", count=40, numbers=numbers,
                      offsets=offsets, ties=[frozenset(PICO_GND)],
-                     labels=dict(PICO_PINS)), []
+                     labels=dict(PICO_PINS), board=True), []
 
 
 def summary() -> list[str]:
@@ -312,6 +366,12 @@ def summary() -> list[str]:
         "- pico: the 40 header pins are built in; name the schematic pins "
         "GP0…GP28, GND, 3V3, VSYS, VBUS, RUN, 3V3_EN, ADC_VREF, AGND. All GND "
         "pins are joined on the board.",
+        "- esp32, arduino_nano, arduino_uno, board: with a wide package "
+        "\"DIP-<pins>-<row distance in mil>\" (e.g. DIP-30-600) they sit on the "
+        "breadboard across the channel — easiest from the library "
+        "(Arduino-Nano, D1-mini, ESP32-DevKitC-V4); without one they stay "
+        "beside it and only their leads go into holes. \"ties\": [[\"GND\", "
+        "\"GND_2\"]] marks pins that are one net on the board itself.",
         "- everything else (resistor, capacitor, led, diode, …) is placed lead "
         "by lead and needs no package.",
     ]

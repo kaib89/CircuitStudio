@@ -1245,7 +1245,7 @@ def _breadboard_review(project: Project) -> list[dict[str, Any]]:
                      f"{project.breadboard[HUMAN_EDIT]} — change it with "
                      f"update_breadboard, not write_breadboard.")
     state = project.breadboard_review_state()
-    png = project.breadboard_png_path
+    png = project.breadboard_review_png_path
     if not state["reviewed"] or not png.exists():
         return [_text("\n".join(lines))]
     lines.append(f"Breadboard handed back {state['at']}"
