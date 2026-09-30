@@ -1,0 +1,13 @@
+{
+  "name": "BS170",
+  "type": "nmos",
+  "description": "N-channel small-signal MOSFET",
+  "package": "TO-92",
+  "pinout": {
+    "drain": 1,
+    "gate": 2,
+    "source": 3
+  },
+  "source": "https://www.onsemi.com/pdf/datasheet/mmbf170-d.pdf — page 1 (BS170 TO-92 CASE 135AN, 3D drawing with leads labelled D, G, S)",
+  "notes": "Combined onsemi BS170/MMBF170 datasheet. The drawing has no pin numbers: it labels the leads D, G, S from left to right with the flat side facing you. D-G-S, the REVERSE of the 2N7000."
+}

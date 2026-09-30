@@ -1,0 +1,13 @@
+{
+  "name": "IRLZ44N",
+  "type": "nmos",
+  "description": "N-channel logic-level power MOSFET, 55 V / 47 A",
+  "package": "TO-220",
+  "pinout": {
+    "gate": 1,
+    "drain": 2,
+    "source": 3
+  },
+  "source": "https://www.infineon.com/dgdl/irlz44npbf.pdf?fileId=5546d462533600a40153567217c32725 — page 8 (TO-220AB package outline, lead assignments: 1 Gate, 2 Drain, 3 Source, 4 Drain)",
+  "notes": "G-D-S from left to right, seen from the printed side. The tab is also drain."
+}

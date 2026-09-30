@@ -1,0 +1,35 @@
+{
+  "name": "TL072",
+  "type": "ic",
+  "description": "Dual JFET-input op-amp",
+  "package": "DIP-8",
+  "pins": {
+    "left": [
+      "1IN-",
+      "1IN+",
+      "2IN+",
+      "2IN-"
+    ],
+    "right": [
+      "1OUT",
+      "2OUT"
+    ],
+    "top": [
+      "VCC+"
+    ],
+    "bottom": [
+      "VCC-"
+    ]
+  },
+  "pinout": {
+    "1OUT": 1,
+    "1IN-": 2,
+    "1IN+": 3,
+    "VCC-": 4,
+    "2IN+": 5,
+    "2IN-": 6,
+    "2OUT": 7,
+    "VCC+": 8
+  },
+  "source": "https://www.ti.com/lit/ds/symlink/tl072.pdf — SLOS080W, Figure 4-5 (8-pin PDIP, top view) + Table 4-3 Pin Functions: TL072x, page 5"
+}

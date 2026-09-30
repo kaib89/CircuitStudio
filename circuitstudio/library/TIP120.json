@@ -1,0 +1,13 @@
+{
+  "name": "TIP120",
+  "type": "npn",
+  "description": "NPN Darlington power transistor, 60 V / 5 A",
+  "package": "TO-220",
+  "pinout": {
+    "base": 1,
+    "collector": 2,
+    "emitter": 3
+  },
+  "source": "https://www.onsemi.com/pdf/datasheet/tip120-d.pdf — page 1 (TO-220AB CASE 221A STYLE 1: 1 Base, 2 Collector, 3 Emitter, 4 Collector) + page 8 (Case 221A outline)",
+  "notes": "B-C-E from left to right, seen from the printed side. The tab is collector."
+}

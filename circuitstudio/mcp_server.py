@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import footprints
+from . import footprints, library
 from .breadboard import HUMAN_EDIT, Breadboard, parse_hole
 from .document import Project, is_safe_name, list_projects
 from .erc import check as erc_check, format_report
@@ -55,6 +55,15 @@ CIRCUIT_SCHEMA = {
                     "id": {"type": "string", "description": "e.g. R1, U1, GND1"},
                     "type": {"type": "string", "enum": KNOWN_TYPES,
                              "description": _TIE_DOC},
+                    "part": {
+                        "type": "string",
+                        "description": (
+                            "A real part from the library (list_library), e.g. "
+                            "\"74HCU04\", \"LM358\", \"BC547\". Supplies pins, "
+                            "package and pinout — prefer it over typing them. "
+                            "'type' can then be left off."
+                        ),
+                    },
                     "value": {"type": "string", "description": "e.g. 10kΩ, 100nF"},
                     "pins": {
                         "type": "object",
@@ -91,7 +100,7 @@ CIRCUIT_SCHEMA = {
                         ),
                     },
                 },
-                "required": ["id", "type"],
+                "required": ["id"],
             },
         },
         "nets": {
@@ -253,6 +262,67 @@ TOOLS: list[dict[str, Any]] = [
             "this before writing a circuit — pin names must match exactly."
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_library",
+        "description": (
+            "List the real parts in the library (ICs, transistors, regulators, "
+            "optocouplers …) with package and pinout from the datasheet. Use "
+            "them in a circuit as {\"id\": \"U1\", \"part\": \"LM358\"} — pins "
+            "and breadboard pinout then come for free. Optional 'query' filters "
+            "by name or description."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+        },
+    },
+    {
+        "name": "get_library_part",
+        "description": "Show one library part: pins, package, pinout and the "
+                       "datasheet it was taken from.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "add_library_part",
+        "description": (
+            "Add a part that is missing from the library, so it stays "
+            "available in CircuitStudio for good (stored in library/). "
+            "Validated before it is stored.\n\n" + library.GUIDE
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "part": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "aliases": {"type": "array", "items": {"type": "string"},
+                                    "description": "Other order codes, e.g. SN74HC04N"},
+                        "type": {"type": "string", "enum": list(library.PART_TYPES)},
+                        "description": {"type": "string"},
+                        "package": {"type": "string",
+                                    "description": "DIP-<n>, SIP-<n>, TO-92 or TO-220"},
+                        "pins": {"type": "object",
+                                 "description": "Only for type 'ic': schematic "
+                                                "sides {left, right, top, bottom}"},
+                        "pinout": {"type": "object",
+                                   "description": "{pin name: physical pin number}"},
+                        "source": {"type": "string",
+                                   "description": "Datasheet URL + table/figure"},
+                        "notes": {"type": "string"},
+                    },
+                    "required": ["name", "type", "package", "pinout", "source"],
+                },
+                "replace": {"type": "boolean",
+                            "description": "Update a part added earlier"},
+            },
+            "required": ["part"],
+        },
     },
     {
         "name": "get_circuit",
@@ -439,6 +509,11 @@ def _validate(circuit: dict[str, Any]) -> list[str]:
             errors.append(f"Part is not an object: {spec!r}")
             continue
         cid = str(spec.get("id", ""))
+        lib_errors = library.check_spec(spec)
+        if lib_errors:
+            errors += lib_errors
+            seen.add(cid)
+            continue
         if cid in seen:
             errors.append(f"Duplicate part ID: {cid}")
             continue
@@ -588,7 +663,49 @@ def tool_list_component_types(_args: dict[str, Any]) -> str:
                  "name says otherwise.")
     lines.append("")
     lines += footprints.summary()
+    lines.append("")
+    lines.append(f"Library: {len(library.catalog())} real parts with datasheet "
+                 f"pinouts (list_library) — write {{\"id\": \"U1\", \"part\": "
+                 f"\"LM358\"}} instead of pins/package/pinout. Missing one? "
+                 f"add_library_part.")
     return "\n".join(lines)
+
+
+def tool_list_library(args: dict[str, Any]) -> str:
+    query = str(args.get("query") or "").strip().lower()
+    entries = [e for e in library.catalog()
+               if not query or query in (e["name"] + " " + " ".join(e.get("aliases") or [])
+                                         + " " + e.get("description", "")).lower()]
+    if not entries:
+        return (f"No library part matches '{query}'. Add it with add_library_part."
+                if query else "The library is empty.")
+    lines = [f"{len(entries)} part(s) — use as {{\"id\": \"U1\", \"part\": \"<name>\"}}:"]
+    lines += [library.describe(e) for e in entries]
+    lines.append("")
+    lines.append("Missing a part? add_library_part adds it for good (see its guide).")
+    return "\n".join(lines)
+
+
+def tool_get_library_part(args: dict[str, Any]) -> str:
+    entry = library.find(str(args.get("name", "")))
+    if entry is None:
+        return (f"'{args.get('name')}' is not in the library — list_library shows "
+                f"what is; add_library_part adds a missing part.")
+    shown = {k: v for k, v in entry.items() if k != "file"}
+    return json.dumps(shown, indent=2, ensure_ascii=False)
+
+
+def tool_add_library_part(args: dict[str, Any]) -> str:
+    entry = args.get("part")
+    path, errors = library.save_user_part(entry if isinstance(entry, dict) else {},
+                                          replace=bool(args.get("replace")))
+    if errors:
+        return ("NOT added — please fix:\n" + "\n".join(f"- {e}" for e in errors)
+                + "\n\n" + library.GUIDE)
+    return (f"Added {entry['name']} to the library: {path}\n"
+            f"Use it as {{\"id\": \"U1\", \"part\": \"{entry['name']}\"}}. It stays "
+            f"available in every project. Tell the human it was added from "
+            f"{entry['source']} so they can double-check the pinout.")
 
 
 def tool_get_circuit(args: dict[str, Any]) -> str:
@@ -1088,6 +1205,9 @@ def _text(text: str) -> dict[str, Any]:
 
 HANDLERS = {
     "list_projects": tool_list_projects,
+    "list_library": tool_list_library,
+    "get_library_part": tool_get_library_part,
+    "add_library_part": tool_add_library_part,
     "list_component_types": tool_list_component_types,
     "get_circuit": tool_get_circuit,
     "write_circuit": tool_write_circuit,

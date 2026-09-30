@@ -1,0 +1,23 @@
+{
+  "name": "PC817",
+  "type": "ic",
+  "description": "Phototransistor optocoupler",
+  "package": "DIP-4",
+  "pins": {
+    "left": [
+      "Anode",
+      "Cathode"
+    ],
+    "right": [
+      "Emitter",
+      "Collector"
+    ]
+  },
+  "pinout": {
+    "Anode": 1,
+    "Cathode": 2,
+    "Emitter": 3,
+    "Collector": 4
+  },
+  "source": "https://global.sharp/products/device/lineup/data/pdf/datasheet/PC817XxNSZ1B_e.pdf — Sharp PC817XxNSZ1B, sheet OP18002EN, internal connection diagram + through-hole outline, page 2"
+}

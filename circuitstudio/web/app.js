@@ -63,6 +63,7 @@ let bbPan = null;
 let bbHover = null;
 let bbViewSaveTimer = null;
 let fitPending = false;     // schematic fit requested while it was hidden
+let boxCollapsed = { errors: false, warnings: false };   // stored per project
 const undoStack = [];
 const redoStack = [];
 const HISTORY_MAX = 50;
@@ -109,6 +110,32 @@ async function api(path, body) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
+}
+
+/** Fill one of the two message boxes: a headline that folds the box away on
+ *  click, the details below it. Folded, only the headline stays on screen,
+ *  so a long list no longer covers the drawing. */
+function fillBox(box, head, body) {
+  box.hidden = false;
+  const folded = !!boxCollapsed[box.id];
+  box.classList.toggle('collapsed', folded);
+  box.innerHTML =
+    `<div class="box-head" title="${folded ? 'Show the details' : 'Fold away'}">` +
+    `<span class="box-arrow">${folded ? '▸' : '▾'}</span>${escapeHtml(head)}</div>` +
+    `<div class="box-body">${escapeHtml(body)}</div>`;
+}
+
+for (const box of [errorsBox, warningsBox]) {
+  box.addEventListener('click', evt => {
+    const head = evt.target.closest('.box-head');
+    if (!head) return;
+    boxCollapsed[box.id] = !boxCollapsed[box.id];
+    const folded = boxCollapsed[box.id];
+    box.classList.toggle('collapsed', folded);
+    head.title = folded ? 'Show the details' : 'Fold away';
+    head.querySelector('.box-arrow').textContent = folded ? '▸' : '▾';
+    api('/api/layout', { collapsed: boxCollapsed }).catch(() => {});
+  });
 }
 
 function setStatus(msg) {
@@ -418,8 +445,8 @@ function render() {
   }
 
   if (scene.errors && scene.errors.length) {
-    errorsBox.hidden = false;
-    errorsBox.textContent = scene.errors.join('\n');
+    fillBox(errorsBox, `${scene.errors.length} problem(s) while drawing`,
+            scene.errors.join('\n'));
   } else {
     errorsBox.hidden = true;
   }
@@ -437,8 +464,10 @@ function render() {
       parts.push(`${placement.length} placement warning(s) — yours to fix ` +
                  `by dragging:\n` + placement.map(w => '· ' + w.message).join('\n'));
     }
-    warningsBox.hidden = false;
-    warningsBox.textContent = parts.join('\n\n');
+    const split = [wiring.length && `${wiring.length} wiring`,
+                   placement.length && `${placement.length} placement`].filter(Boolean);
+    fillBox(warningsBox, `${erc.length} warning(s): ${split.join(', ')}`,
+            parts.join('\n\n'));
   } else {
     warningsBox.hidden = true;
   }
@@ -485,6 +514,7 @@ function applyPayload(payload) {
 async function loadState(resetView) {
   const payload = await api('/api/state');
   if (resetView) {
+    boxCollapsed = { errors: false, warnings: false, ...(payload.collapsed || {}) };
     mode = payload.mode === 'breadboard' ? 'breadboard' : 'schematic';
     bbView = payload.bbView && payload.bbView.w > 0 ? payload.bbView : null;
     bbSvg = '';   // another project: its board must be drawn afresh
@@ -1377,8 +1407,8 @@ function bbDefaultStatus() {
 /** The message boxes belong to whichever view is shown. */
 function renderBbBoxes() {
   if (!bb || !bb.exists) {
-    errorsBox.hidden = !(bb && bb.error);
-    if (bb && bb.error) errorsBox.textContent = bb.error;
+    errorsBox.hidden = true;
+    if (bb && bb.error) fillBox(errorsBox, 'breadboard.json cannot be read', bb.error);
     warningsBox.hidden = true;
     setStatus(bbDefaultStatus());
     return;
@@ -1387,9 +1417,8 @@ function renderBbBoxes() {
   const structure = findings.filter(f => f.kind === 'structure');
   errorsBox.hidden = !structure.length;
   if (structure.length) {
-    errorsBox.textContent =
-      `The plan itself has ${structure.length} problem(s):\n` +
-      structure.map(f => '· ' + f.message).join('\n');
+    fillBox(errorsBox, `The plan itself has ${structure.length} problem(s)`,
+            structure.map(f => '· ' + f.message).join('\n'));
   }
   const parts = [];
   for (const [kind, text] of Object.entries(BB_KINDS)) {
@@ -1400,7 +1429,10 @@ function renderBbBoxes() {
     }
   }
   warningsBox.hidden = !parts.length;
-  if (parts.length) warningsBox.textContent = parts.join('\n\n');
+  if (parts.length) {
+    const n = bbProblems().filter(f => f.kind !== 'structure').length;
+    fillBox(warningsBox, `${n} problem(s) on the board`, parts.join('\n\n'));
+  }
   setStatus(bbDefaultStatus());
 }
 

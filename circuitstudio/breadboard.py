@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .footprints import LEGS, RIGID, Footprint, footprint, is_physical
+from .library import expand
 from .registry import build_component
 from .symbols import Component
 
@@ -167,7 +168,7 @@ class Breadboard:
                 comp = build_component(spec)
             except (ValueError, TypeError, AttributeError):
                 continue        # reported by the circuit validation already
-            self._specs[comp.comp_id] = spec
+            self._specs[comp.comp_id] = expand(spec)   # a library part's value etc.
             self._comps[comp.comp_id] = comp
 
         if self.exists:

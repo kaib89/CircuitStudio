@@ -1,0 +1,36 @@
+{
+  "name": "6N137",
+  "type": "ic",
+  "description": "High-speed 10 MBd optocoupler, logic output with enable",
+  "package": "DIP-8",
+  "pins": {
+    "left": [
+      "NC_1",
+      "A",
+      "C",
+      "NC_4",
+      "VE"
+    ],
+    "right": [
+      "VO"
+    ],
+    "top": [
+      "VCC"
+    ],
+    "bottom": [
+      "GND"
+    ]
+  },
+  "pinout": {
+    "NC_1": 1,
+    "A": 2,
+    "C": 3,
+    "NC_4": 4,
+    "GND": 5,
+    "VO": 6,
+    "VE": 7,
+    "VCC": 8
+  },
+  "source": "https://www.vishay.com/docs/84732/6n137.pdf — Vishay doc. 84732 rev. 2.2, single-channel pinout figure, page 1",
+  "notes": "A = LED anode, C = LED cathode, VE = enable, VO = open-drain output (needs a pull-up). 0.1 µF between pins 5 and 8 recommended. Only the Vishay datasheet was checked; dual-channel relatives (VO2630 …) differ."
+}

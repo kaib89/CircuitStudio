@@ -1,0 +1,13 @@
+{
+  "name": "BC547",
+  "type": "npn",
+  "description": "NPN small-signal amplifier",
+  "package": "TO-92",
+  "pinout": {
+    "collector": 1,
+    "base": 2,
+    "emitter": 3
+  },
+  "source": "https://www.onsemi.com/pdf/datasheet/bc546-d.pdf — page 1 (TO-92 CASE 29 STYLE 17) + pages 6-7 (Case 29-11 outline, STYLE 17: PIN 1 COLLECTOR, 2 BASE, 3 EMITTER)",
+  "notes": "onsemi BC546 datasheet, also covers BC547A/B/C. C-B-E from left to right, the reverse of the 2N3904. Other manufacturers not checked."
+}

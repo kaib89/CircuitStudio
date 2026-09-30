@@ -1,0 +1,24 @@
+{
+  "name": "MCP1700",
+  "type": "ic",
+  "description": "Low-quiescent-current LDO, 250 mA",
+  "package": "TO-92",
+  "pins": {
+    "right": [
+      "VOUT"
+    ],
+    "top": [
+      "VIN"
+    ],
+    "bottom": [
+      "GND"
+    ]
+  },
+  "pinout": {
+    "GND": 1,
+    "VIN": 2,
+    "VOUT": 3
+  },
+  "source": "https://ww1.microchip.com/downloads/en/DeviceDoc/MCP1700-Low-Quiescent-Current-LDO-20001826E.pdf — DS20001826E, 3-pin TO-92 package drawing (front view), page 1 + Table 3-1, page 11",
+  "notes": "VIN is the MIDDLE lead and GND the left one — unlike 78Lxx regulators, so do not swap one for the other. The SOT-23 version has a different order."
+}

@@ -1,0 +1,13 @@
+{
+  "name": "2N3906",
+  "type": "pnp",
+  "description": "PNP general purpose",
+  "package": "TO-92",
+  "pinout": {
+    "emitter": 1,
+    "base": 2,
+    "collector": 3
+  },
+  "source": "https://www.onsemi.com/pdf/datasheet/2n3906-d.pdf — page 1 (TO-92 CASE 29 STYLE 1) + pages 7-8 (Case 29-11 outline, STYLE 1: PIN 1 EMITTER, 2 BASE, 3 COLLECTOR)",
+  "notes": "Same Case 29-11 drawing as the 2N3904. Flat side facing you, leads down: E-B-C from left to right."
+}

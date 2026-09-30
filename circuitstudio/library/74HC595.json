@@ -1,0 +1,52 @@
+{
+  "name": "74HC595",
+  "type": "ic",
+  "description": "8-bit shift register with output latches",
+  "package": "DIP-16",
+  "pins": {
+    "left": [
+      "SRCLR",
+      "SRCLK",
+      "RCLK",
+      "OE",
+      "SER"
+    ],
+    "right": [
+      "QB",
+      "QC",
+      "QD",
+      "QE",
+      "QF",
+      "QG",
+      "QH",
+      "QH'",
+      "QA"
+    ],
+    "top": [
+      "VCC"
+    ],
+    "bottom": [
+      "GND"
+    ]
+  },
+  "pinout": {
+    "QB": 1,
+    "QC": 2,
+    "QD": 3,
+    "QE": 4,
+    "QF": 5,
+    "QG": 6,
+    "QH": 7,
+    "GND": 8,
+    "QH'": 9,
+    "SRCLR": 10,
+    "SRCLK": 11,
+    "RCLK": 12,
+    "OE": 13,
+    "SER": 14,
+    "QA": 15,
+    "VCC": 16
+  },
+  "source": "https://www.ti.com/lit/ds/symlink/sn74hc595.pdf — SCLS041J, Section 5 'Pin Configuration and Functions', pinout figure (top view) + Table 5-1, page 3; confirmed by https://assets.nexperia.com/documents/data-sheet/74HC_HCT595.pdf Table 2",
+  "notes": "OE (13) and SRCLR (10) are active low. Nexperia names: Q0-Q7 = QA-QH, Q7S = QH', MR = SRCLR, SHCP = SRCLK, STCP = RCLK, DS = SER."
+}

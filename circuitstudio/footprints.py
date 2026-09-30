@@ -25,6 +25,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .library import expand
 from .symbols import Component
 from .ties import TIE_TYPES
 
@@ -155,7 +156,8 @@ def check_spec(spec: dict[str, Any], comp: Component) -> list[str]:
     it only matters once the part is put on a breadboard.
     """
     cid = comp.comp_id
-    ctype = str(spec.get("type", "")).lower()
+    from_library = bool(spec.get("part"))    # supplies whatever is left out
+    ctype = str(expand(spec).get("type", "")).lower()
     has_pkg = "package" in spec
     has_map = "pinout" in spec
     if not has_pkg and not has_map:
@@ -168,7 +170,7 @@ def check_spec(spec: dict[str, Any], comp: Component) -> list[str]:
     if ctype == "pico" and has_pkg:
         return [f"Part '{cid}': the Pico's package is built in — leave 'package' off"]
     _, errors = footprint(spec, comp)
-    if ctype == "ic" and has_pkg != has_map:
+    if ctype == "ic" and has_pkg != has_map and not from_library:
         errors.insert(0, f"Part '{cid}': 'package' and 'pinout' go together — "
                          f"give both")
     return errors
@@ -176,6 +178,7 @@ def check_spec(spec: dict[str, Any], comp: Component) -> list[str]:
 
 def footprint(spec: dict[str, Any], comp: Component) -> tuple[Footprint | None, list[str]]:
     """The footprint of one part, or None plus the reason it has none."""
+    spec = expand(spec)
     cid = comp.comp_id
     ctype = str(spec.get("type", "")).lower()
     names = [p.name for p in comp.pins]

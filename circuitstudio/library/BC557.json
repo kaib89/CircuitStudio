@@ -1,0 +1,13 @@
+{
+  "name": "BC557",
+  "type": "pnp",
+  "description": "PNP small-signal amplifier",
+  "package": "TO-92",
+  "pinout": {
+    "collector": 1,
+    "base": 2,
+    "emitter": 3
+  },
+  "source": "https://www.onsemi.com/pdf/datasheet/bc556b-d.pdf — page 1 (TO-92 CASE 29 STYLE 17) + pages 7-8 (Case 29-11 outline, STYLE 17: PIN 1 COLLECTOR, 2 BASE, 3 EMITTER)",
+  "notes": "Covers BC556B, BC557A/B/C, BC558B. C-B-E from left to right. Other manufacturers not checked."
+}
