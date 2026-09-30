@@ -1,0 +1,51 @@
+{
+  "name": "CD4011B",
+  "aliases": [
+    "CD4011"
+  ],
+  "type": "ic",
+  "description": "Quad 2-input NAND (CMOS 4000)",
+  "package": "DIP-14",
+  "pins": {
+    "left": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "H"
+    ],
+    "right": [
+      "J",
+      "K",
+      "L",
+      "M"
+    ],
+    "top": [
+      "VDD"
+    ],
+    "bottom": [
+      "VSS"
+    ]
+  },
+  "pinout": {
+    "A": 1,
+    "B": 2,
+    "J": 3,
+    "K": 4,
+    "C": 5,
+    "D": 6,
+    "VSS": 7,
+    "E": 8,
+    "F": 9,
+    "L": 10,
+    "M": 11,
+    "G": 12,
+    "H": 13,
+    "VDD": 14
+  },
+  "source": "https://www.ti.com/lit/ds/symlink/cd4011b.pdf — SCHS021D, 'TERMINAL ASSIGNMENTS' CD4011B top view, page 1",
+  "notes": "J = NOT(A·B), K = NOT(C·D), L = NOT(E·F), M = NOT(G·H). Pinout differs from 74HC00 (outputs on 3, 4, 10, 11)."
+}

@@ -1,0 +1,35 @@
+{
+  "name": "NE5532",
+  "type": "ic",
+  "description": "Dual low-noise op-amp",
+  "package": "DIP-8",
+  "pins": {
+    "left": [
+      "1IN-",
+      "1IN+",
+      "2IN+",
+      "2IN-"
+    ],
+    "right": [
+      "1OUT",
+      "2OUT"
+    ],
+    "top": [
+      "VCC+"
+    ],
+    "bottom": [
+      "VCC-"
+    ]
+  },
+  "pinout": {
+    "1OUT": 1,
+    "1IN-": 2,
+    "1IN+": 3,
+    "VCC-": 4,
+    "2IN+": 5,
+    "2IN-": 6,
+    "2OUT": 7,
+    "VCC+": 8
+  },
+  "source": "https://www.ti.com/lit/ds/symlink/ne5532.pdf — SLOS075K, Figure 4-1 (P package 8-pin PDIP, top view) + Pin Functions table, page 2"
+}

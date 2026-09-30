@@ -1,0 +1,48 @@
+{
+  "name": "74HC14",
+  "type": "ic",
+  "description": "Hex Schmitt-trigger inverter",
+  "package": "DIP-14",
+  "pins": {
+    "left": [
+      "1A",
+      "2A",
+      "3A",
+      "4A",
+      "5A",
+      "6A"
+    ],
+    "right": [
+      "1Y",
+      "2Y",
+      "3Y",
+      "4Y",
+      "5Y",
+      "6Y"
+    ],
+    "top": [
+      "VCC"
+    ],
+    "bottom": [
+      "GND"
+    ]
+  },
+  "pinout": {
+    "1A": 1,
+    "1Y": 2,
+    "2A": 3,
+    "2Y": 4,
+    "3A": 5,
+    "3Y": 6,
+    "GND": 7,
+    "4Y": 8,
+    "4A": 9,
+    "5Y": 10,
+    "5A": 11,
+    "6Y": 12,
+    "6A": 13,
+    "VCC": 14
+  },
+  "source": "https://www.ti.com/lit/ds/symlink/sn74hc14.pdf — SCLS085L, Section 4 'Pin Configuration and Functions', Figure 4-1 (top view), page 3",
+  "notes": "Same pinout as the 74HC04."
+}

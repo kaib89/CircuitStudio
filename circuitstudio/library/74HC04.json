@@ -1,0 +1,47 @@
+{
+  "name": "74HC04",
+  "type": "ic",
+  "description": "Hex inverter",
+  "package": "DIP-14",
+  "pins": {
+    "left": [
+      "1A",
+      "2A",
+      "3A",
+      "4A",
+      "5A",
+      "6A"
+    ],
+    "right": [
+      "1Y",
+      "2Y",
+      "3Y",
+      "4Y",
+      "5Y",
+      "6Y"
+    ],
+    "top": [
+      "VCC"
+    ],
+    "bottom": [
+      "GND"
+    ]
+  },
+  "pinout": {
+    "1A": 1,
+    "1Y": 2,
+    "2A": 3,
+    "2Y": 4,
+    "3A": 5,
+    "3Y": 6,
+    "GND": 7,
+    "4Y": 8,
+    "4A": 9,
+    "5Y": 10,
+    "5A": 11,
+    "6Y": 12,
+    "6A": 13,
+    "VCC": 14
+  },
+  "source": "https://www.ti.com/lit/ds/symlink/sn74hc04.pdf — SCLS078H, Section 5 'Pin Configuration and Functions', Figure 5-1 (top view), page 3"
+}

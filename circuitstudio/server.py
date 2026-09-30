@@ -83,6 +83,7 @@ class AppState:
             "mode": self.project.layout.get("mode", "schematic"),
             "bbView": self.project.layout.get("bbView"),
             "bbReview": self.project.breadboard_review_state(),
+            "collapsed": self.project.layout.get("collapsed", {}),
             "breadboard": self.breadboard_payload(),
         }
 
@@ -193,6 +194,10 @@ class Handler(BaseHTTPRequestHandler):
                     proj.layout["bbView"] = body["bbView"]
                 if body.get("mode") in ("schematic", "breadboard"):
                     proj.layout["mode"] = body["mode"]
+                if isinstance(body.get("collapsed"), dict):
+                    proj.layout["collapsed"] = {
+                        k: bool(v) for k, v in body["collapsed"].items()
+                        if k in ("errors", "warnings")}
                 if isinstance(body.get("grid"), int) and body["grid"] > 0:
                     proj.layout["grid"] = body["grid"]
                 if isinstance(body.get("showGrid"), bool):

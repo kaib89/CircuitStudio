@@ -1,0 +1,55 @@
+{
+  "name": "CD4060B",
+  "aliases": [
+    "CD4060"
+  ],
+  "type": "ic",
+  "description": "14-stage binary counter and oscillator",
+  "package": "DIP-16",
+  "pins": {
+    "left": [
+      "PHI_I",
+      "RESET"
+    ],
+    "right": [
+      "Q12",
+      "Q13",
+      "Q14",
+      "Q6",
+      "Q5",
+      "Q7",
+      "Q4",
+      "PHI_O",
+      "PHI_O_N",
+      "Q9",
+      "Q8",
+      "Q10"
+    ],
+    "top": [
+      "VDD"
+    ],
+    "bottom": [
+      "VSS"
+    ]
+  },
+  "pinout": {
+    "Q12": 1,
+    "Q13": 2,
+    "Q14": 3,
+    "Q6": 4,
+    "Q5": 5,
+    "Q7": 6,
+    "Q4": 7,
+    "VSS": 8,
+    "PHI_O": 9,
+    "PHI_O_N": 10,
+    "PHI_I": 11,
+    "RESET": 12,
+    "Q9": 13,
+    "Q8": 14,
+    "Q10": 15,
+    "VDD": 16
+  },
+  "source": "https://www.ti.com/lit/ds/symlink/cd4060b.pdf — SCHS049C, 'TERMINAL DIAGRAM' top view, page 4; cross-checked with the functional diagram, page 1",
+  "notes": "Pin 9 = φO, pin 10 = φO inverted, pin 11 = φI (oscillator/clock input). Q1-Q3 and Q11 are not brought out."
+}

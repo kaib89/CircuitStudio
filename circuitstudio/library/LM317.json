@@ -1,0 +1,24 @@
+{
+  "name": "LM317",
+  "type": "ic",
+  "description": "Adjustable linear regulator",
+  "package": "TO-220",
+  "pins": {
+    "left": [
+      "ADJUST"
+    ],
+    "right": [
+      "OUTPUT"
+    ],
+    "top": [
+      "INPUT"
+    ]
+  },
+  "pinout": {
+    "ADJUST": 1,
+    "OUTPUT": 2,
+    "INPUT": 3
+  },
+  "source": "https://www.ti.com/lit/ds/symlink/lm317.pdf — SLVS044Z, Figure 5-2 (KCS/KCT 3-pin TO-220, legacy chip) + Pin Functions table, page 5",
+  "notes": "The TAB IS OUTPUT: a heatsink on it carries the output voltage and must be insulated from GND. The datasheet draws no front view; pin 1 on the left seen from the printed side is the usual convention."
+}

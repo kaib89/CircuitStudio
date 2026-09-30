@@ -1,0 +1,13 @@
+{
+  "name": "2N7000",
+  "type": "nmos",
+  "description": "N-channel small-signal MOSFET",
+  "package": "TO-92",
+  "pinout": {
+    "source": 1,
+    "gate": 2,
+    "drain": 3
+  },
+  "source": "https://www.onsemi.com/pdf/datasheet/nds7002a-d.pdf — page 1 (TO-92 CASE 135AN/135AR: 1 - Source, 2 - Gate, 3 - Drain) + page 8 (Case 135AN outline)",
+  "notes": "Combined onsemi 2N7000/2N7002/NDS7002A datasheet. S-G-D from left to right, the REVERSE of the BS170 (D-G-S)."
+}

@@ -78,7 +78,8 @@ currently running.
 }
 ```
 
-Tools: `list_projects`, `list_component_types`, `get_circuit`, `write_circuit`,
+Tools: `list_projects`, `list_component_types`, `list_library`,
+`get_library_part`, `add_library_part`, `get_circuit`, `write_circuit`,
 `update_circuit`, `get_breadboard`, `write_breadboard`, `update_breadboard`,
 `open_editor`, `review_project`.
 
@@ -296,6 +297,29 @@ both exist. The Pico's 40 header pins are built in: name the schematic pins
 `AGND`, and all its GND pins count as one. AGND is kept separate — whether it
 is joined to GND on the board was not verified.
 
+### Parts library
+
+Real parts do not have to be typed in pin by pin. The library knows common
+ICs, op-amps, regulators, transistors and optocouplers together with their
+package and datasheet pinout:
+
+```json
+{ "id": "U1", "part": "74HCU04" }
+{ "id": "Q1", "part": "BC547" }
+```
+
+Pins, package and pinout come from the library; anything the circuit states
+itself (a value, a second-source pinout) wins. `list_library` shows what is
+there, `get_library_part` one entry with the datasheet it was taken from.
+
+A missing part can be added for good with `add_library_part`. Its description
+carries a short guide — manufacturer datasheet, breadboard package, pin names
+as in the datasheet, pinout read from the package drawing — and the tool
+refuses a part without a datasheet source, with a pin left unnumbered or a
+number used twice. Added parts go to `library/` next to `projects/`, one JSON
+file each, so they are in git and available in every project. Built-in parts
+(`circuitstudio/library/`) cannot be shadowed by an added one.
+
 When the circuit changes, `write_circuit`/`update_circuit` re-check an existing
 breadboard plan and report what the change broke; `review_project` includes the
 breadboard check as well.
@@ -355,6 +379,8 @@ circuitstudio/
   router.py      orthogonal routing (A*) and junction detection
   erc.py         rule check: open pins, split nodes, dead nets
   footprints.py  physical packages and pin numbers (DIP, SIP, Pico)
+  library.py     parts library: real parts with datasheet pinouts
+  library/       the built-in library parts, one JSON file each
   breadboard.py  breadboard plan: parsing and the check against the netlist
   bb_scene.py    breadboard drawing for the editor and the SVG export
   scene.py       geometry; feeds both the editor and the SVG export
@@ -362,6 +388,7 @@ circuitstudio/
   mcp_server.py  MCP server for assistants
   web/           the editor UI
 projects/        your circuits
+library/         parts the assistant added to the library
 ```
 
 The editor and the exported SVG are generated from the same geometry, so what

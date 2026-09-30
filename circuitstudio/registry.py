@@ -7,6 +7,7 @@ here — they belong to the layout document.
 from __future__ import annotations
 from typing import Any
 
+from . import library
 from .symbols import (
     Component,
     Resistor, Capacitor, CapacitorPol, Inductor,
@@ -71,8 +72,10 @@ def build_component(spec: dict[str, Any]) -> Component:
     """Instantiate one component from its JSON spec.
 
     Required keys: `id`, `type`. Optional: `value`, plus type-specific keys
-    (`pins` for ic/boards, `n`/`side` for connector).
+    (`pins` for ic/boards, `n`/`side` for connector). A `part` from the
+    library fills in whatever of these the spec leaves out.
     """
+    spec = library.expand(spec)
     ctype = str(spec.get("type", "")).lower().strip()
     cid = str(spec.get("id", "")).strip()
     if not cid:

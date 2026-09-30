@@ -382,6 +382,19 @@ body.tray-dragging, body.tray-dragging * { cursor: copy !important; }
 #bbTray .tray-value { font-weight: normal; color: #6b7885; margin-left: 6px; }
 #bbTray .tray-note { color: #7a5312; margin: 2px 4px; }
 
+/* Message boxes fold down to their headline. */
+.box-head {
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  white-space: normal;
+}
+.box-head:hover { text-decoration: underline; }
+.box-arrow { display: inline-block; width: 1.1em; }
+.box-body { margin-top: 4px; }
+#errors.collapsed .box-body,
+#warnings.collapsed .box-body { display: none; }
+
 /* Narrower windows: the toolbar must never wrap (see #toolbar), so it gets
    denser instead of losing controls off the right edge. */
 @media (max-width: 1640px) {

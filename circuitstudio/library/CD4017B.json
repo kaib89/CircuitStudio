@@ -1,0 +1,55 @@
+{
+  "name": "CD4017B",
+  "aliases": [
+    "CD4017"
+  ],
+  "type": "ic",
+  "description": "Decade counter with 10 decoded outputs",
+  "package": "DIP-16",
+  "pins": {
+    "left": [
+      "CLOCK_INHIBIT",
+      "CLOCK",
+      "RESET"
+    ],
+    "right": [
+      "Q5",
+      "Q1",
+      "Q0",
+      "Q2",
+      "Q6",
+      "Q7",
+      "Q3",
+      "Q8",
+      "Q4",
+      "Q9",
+      "CARRY_OUT"
+    ],
+    "top": [
+      "VDD"
+    ],
+    "bottom": [
+      "VSS"
+    ]
+  },
+  "pinout": {
+    "Q5": 1,
+    "Q1": 2,
+    "Q0": 3,
+    "Q2": 4,
+    "Q6": 5,
+    "Q7": 6,
+    "Q3": 7,
+    "VSS": 8,
+    "Q8": 9,
+    "Q4": 10,
+    "Q9": 11,
+    "CARRY_OUT": 12,
+    "CLOCK_INHIBIT": 13,
+    "CLOCK": 14,
+    "RESET": 15,
+    "VDD": 16
+  },
+  "source": "https://www.ti.com/lit/ds/symlink/cd4017b.pdf — SCHS027C, 'CD4017B TERMINAL DIAGRAM' top view, page 1; cross-checked with the functional diagram",
+  "notes": "The datasheet labels the decoded outputs 0…9; named Q0…Q9 here."
+}

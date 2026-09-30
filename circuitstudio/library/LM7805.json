@@ -1,0 +1,27 @@
+{
+  "name": "LM7805",
+  "aliases": [
+    "7805"
+  ],
+  "type": "ic",
+  "description": "5 V fixed linear regulator",
+  "package": "TO-220",
+  "pins": {
+    "right": [
+      "OUTPUT"
+    ],
+    "top": [
+      "INPUT"
+    ],
+    "bottom": [
+      "GND"
+    ]
+  },
+  "pinout": {
+    "INPUT": 1,
+    "GND": 2,
+    "OUTPUT": 3
+  },
+  "source": "https://www.ti.com/lit/ds/symlink/lm340.pdf — SNOSBT0L (LM340/LM7805), NDE 3-pin TO-220 figure + Pin Functions table, page 3",
+  "notes": "Pin numbers from the Pin Functions table (1 INPUT, 2 GND, 3 OUTPUT); the tab is GND. The datasheet draws no front view, but its top view is consistent with INPUT on the left seen from the printed side. Only TI's LM7805 was checked — ST's L7805 datasheet could not be opened."
+}

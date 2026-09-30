@@ -1,0 +1,36 @@
+{
+  "name": "LM358",
+  "type": "ic",
+  "description": "Dual op-amp",
+  "package": "DIP-8",
+  "pins": {
+    "left": [
+      "IN1-",
+      "IN1+",
+      "IN2+",
+      "IN2-"
+    ],
+    "right": [
+      "OUT1",
+      "OUT2"
+    ],
+    "top": [
+      "V+"
+    ],
+    "bottom": [
+      "V-"
+    ]
+  },
+  "pinout": {
+    "OUT1": 1,
+    "IN1-": 2,
+    "IN1+": 3,
+    "V-": 4,
+    "IN2+": 5,
+    "IN2-": 6,
+    "OUT2": 7,
+    "V+": 8
+  },
+  "source": "https://www.ti.com/lit/ds/symlink/lm358.pdf — SLOS068AB, Figure 4-1 (8-pin incl. PDIP, top view) + Table 4-1 Pin Functions, page 3",
+  "notes": "V- is the negative supply, or GND with a single supply."
+}

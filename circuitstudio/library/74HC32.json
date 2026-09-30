@@ -1,0 +1,47 @@
+{
+  "name": "74HC32",
+  "type": "ic",
+  "description": "Quad 2-input OR",
+  "package": "DIP-14",
+  "pins": {
+    "left": [
+      "1A",
+      "1B",
+      "2A",
+      "2B",
+      "3A",
+      "3B",
+      "4A",
+      "4B"
+    ],
+    "right": [
+      "1Y",
+      "2Y",
+      "3Y",
+      "4Y"
+    ],
+    "top": [
+      "VCC"
+    ],
+    "bottom": [
+      "GND"
+    ]
+  },
+  "pinout": {
+    "1A": 1,
+    "1B": 2,
+    "1Y": 3,
+    "2A": 4,
+    "2B": 5,
+    "2Y": 6,
+    "GND": 7,
+    "3Y": 8,
+    "3A": 9,
+    "3B": 10,
+    "4Y": 11,
+    "4A": 12,
+    "4B": 13,
+    "VCC": 14
+  },
+  "source": "https://www.ti.com/lit/ds/symlink/sn74hc32.pdf — SCLS200F, Section 5 'Pin Configuration and Functions', Figure 5-1 (top view), page 3"
+}
