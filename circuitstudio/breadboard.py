@@ -113,6 +113,7 @@ class Part:
     rotation: int = 0
     pins: list[PlacedPin] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)   # names without a hole
+    covered: list[Hole] = field(default_factory=list)  # under the part's body
 
 
 @dataclass
@@ -338,6 +339,7 @@ class Breadboard:
                       f"terminal strips. A DIP straddles the centre channel with "
                       f"pin 1 in row e (rotation 0) or row f (rotation 180).")
             return False
+        part.covered = covered_holes([p.hole for p in part.pins])
         return True
 
     def _parse_wire(self, i: int, w: Any) -> None:
@@ -373,15 +375,24 @@ class Breadboard:
         for part in self.parts.values():
             for p in part.pins:     # off-board leads end in a hole, too
                 self._claim(owner, p.hole, p.label)
+        for part in self.parts.values():
+            for h in part.covered:
+                self._claim(owner, h, f"the body of {part.cid}")
         for i, w in enumerate(self.wires, 1):
             self._claim(owner, w.a, f"wire {i}")
             self._claim(owner, w.b, f"wire {i}")
 
     def _claim(self, owner: dict[str, str], hole: Hole, who: str) -> None:
         if hole.name in owner:
-            self._add(STRUCTURE, f"Hole {hole.name} is used twice: {owner[hole.name]} "
-                                 f"and {who}. Use another hole of the same column.",
-                      [hole.name])
+            first = owner[hole.name]
+            if who.startswith("the body of") or first.startswith("the body of"):
+                body, lead = (who, first) if who.startswith("the body") else (first, who)
+                msg = (f"Hole {hole.name} is covered by {body[len('the body of '):]} "
+                       f"— {lead} cannot go in there.")
+            else:
+                msg = (f"Hole {hole.name} is used twice: {first} and {who}. Use "
+                       f"another hole of the same column.")
+            self._add(STRUCTURE, msg, [hole.name])
         else:
             owner[hole.name] = who
 
@@ -502,6 +513,9 @@ class Breadboard:
             for p in part.pins:
                 pin = p.ref.split(".", 1)[1] if p.ref else None
                 used[p.hole.name] = {"part": part.cid, "pin": pin}
+        for part in self.parts.values():
+            for h in part.covered:
+                used.setdefault(h.name, {"part": part.cid, "pin": None, "covered": True})
         for w in self.wires:
             used.setdefault(w.a.name, {"wire": w.index, "end": "from"})
             used.setdefault(w.b.name, {"wire": w.index, "end": "to"})
@@ -543,6 +557,17 @@ class Breadboard:
         lines = [head, f"{len(self.findings)} finding(s):"]
         lines += [f"- {f['message']}" for f in self.findings]
         return "\n".join(lines)
+
+
+def covered_holes(holes: list[Hole]) -> list[Hole]:
+    """Terminal holes under a wide board's body (the Pico spans rows c-h and
+    hides d-g). A DIP's rows are one channel apart, so it covers none."""
+    ys = {ROW_Y[h.row] for h in holes if not h.rail}
+    if len(ys) < 2 or max(ys) - min(ys) <= 3:
+        return []
+    cols = {h.col for h in holes}
+    return [Hole(f"{row}{c}", c, row) for c in sorted(cols)
+            for row, y in ROW_Y.items() if min(ys) < y < max(ys)]
 
 
 def _few(pins: list[PlacedPin], n: int = 3) -> str:

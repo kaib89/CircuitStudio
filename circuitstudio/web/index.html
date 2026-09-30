@@ -24,6 +24,8 @@
   <button id="btnReroute" class="sch-only" title="Forget the stored wires and route every connection afresh">Reroute</button>
   <button id="btnArrange" class="sch-only" title="Discard all positions except locked parts and lay the schematic out again">Auto-arrange</button>
   <button id="btnExport" title="Write the SVG of the current view next to the project files">Export SVG</button>
+  <button id="btnBbRest" class="bb-only" title="Put every part that is not on the board yet onto it — what is already placed stays">Place the rest</button>
+  <button id="btnBbAll" class="bb-only" title="Lay the whole breadboard out afresh (Ctrl+Z brings the old one back)">Re-place all</button>
   <button id="btnHandBack" title="Mark the arrangement as finished and render a picture the assistant can look at">Hand back ✓</button>
 
   <span class="group sch-only" id="alignGroup">
@@ -94,7 +96,8 @@
   <div id="bbEmpty" class="bb-only" hidden>
     <b>No breadboard plan yet.</b><br>
     Ask the assistant to write one — it uses the <code>write_breadboard</code> tool,
-    and the plan shows up here by itself, checked against the schematic.
+    and the plan shows up here by itself, checked against the schematic.<br>
+    <button id="btnBbCreate">Or lay one out automatically</button>
   </div>
 
   <div id="errors" hidden></div>

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import footprints, library
+from .bb_place import autoplace
 from .breadboard import HUMAN_EDIT, Breadboard, parse_hole
 from .document import Project, is_safe_name, list_projects
 from .erc import check as erc_check, format_report
@@ -414,6 +415,30 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["project", "breadboard"],
+        },
+    },
+    {
+        "name": "autoplace_breadboard",
+        "description": (
+            "Let CircuitStudio lay out the breadboard: chips along the centre "
+            "channel, ground and supply on the rails, two-lead parts bridging "
+            "the columns of their nets, jumpers for the rest. The result always "
+            "passes the check; parts that cannot be placed (no pinout, no room) "
+            "are listed. mode 'rest' (default) keeps everything already on the "
+            "board and only adds — fine on a plan the human arranged. mode "
+            "'all' starts over; on a human-edited plan it needs replace=true "
+            "(ask them first). Creates the plan if there is none. A starting "
+            "point for the human to rearrange, not an optimum — it knows "
+            "nothing about RF layout, heat or mechanical fit."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "mode": {"type": "string", "enum": ["rest", "all"]},
+                "replace": {"type": "boolean"},
+            },
+            "required": ["project"],
         },
     },
     {
@@ -1049,6 +1074,37 @@ def apply_breadboard_changes(plan: dict[str, Any],
     return plan, log
 
 
+def tool_autoplace_breadboard(args: dict[str, Any]) -> str:
+    name = _require_name(args)
+    mode = args.get("mode") or "rest"
+    if mode not in ("rest", "all"):
+        raise ValueError("'mode' must be 'rest' or 'all'.")
+    project = Project(PROJECTS_DIR, name)
+    if not project.circuit_path.exists():
+        return f"Project '{name}' does not exist yet — write the circuit first."
+    project.load()
+    current = project.breadboard or {}
+    if mode == "all" and current.get(HUMAN_EDIT) and not args.get("replace"):
+        return (f"NOT changed — the human arranged this breadboard "
+                f"({current[HUMAN_EDIT]}); 'all' would throw that away. Use "
+                f"mode 'rest' to add what is missing, or replace=true if they "
+                f"want to start over.")
+    before = len(current.get("parts") or {}) if mode == "rest" else 0
+    plan, log, failed = autoplace(project.circuit, project.breadboard, mode)
+    project.save_breadboard(plan, backup=True)
+    bb = Breadboard(plan, project.circuit)
+    lines = [f"Written: {project.breadboard_path}",
+             f"Placed {len(plan['parts']) - before} part(s), "
+             f"{len(plan['wires'])} wire(s) on the board now."]
+    if failed:
+        lines.append("Could not place:")
+        lines += [f"- {f}" for f in failed]
+    lines += ["", bb.report(), "",
+              "The human sees it in the editor's 'Breadboard' view and can "
+              "rearrange it from there."]
+    return "\n".join(lines)
+
+
 def tool_update_breadboard(args: dict[str, Any]) -> str:
     name = _require_name(args)
     changes = args.get("changes")
@@ -1215,6 +1271,7 @@ HANDLERS = {
     "get_breadboard": tool_get_breadboard,
     "write_breadboard": tool_write_breadboard,
     "update_breadboard": tool_update_breadboard,
+    "autoplace_breadboard": tool_autoplace_breadboard,
     "open_editor": tool_open_editor,
     "review_project": tool_review_project,
 }
