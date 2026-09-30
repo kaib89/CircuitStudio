@@ -24,7 +24,7 @@
   <button id="btnReroute" class="sch-only" title="Forget the stored wires and route every connection afresh">Reroute</button>
   <button id="btnArrange" class="sch-only" title="Discard all positions except locked parts and lay the schematic out again">Auto-arrange</button>
   <button id="btnExport" title="Write the SVG of the current view next to the project files">Export SVG</button>
-  <button id="btnHandBack" class="sch-only" title="Mark the arrangement as finished and render a picture the assistant can look at">Hand back ✓</button>
+  <button id="btnHandBack" title="Mark the arrangement as finished and render a picture the assistant can look at">Hand back ✓</button>
 
   <span class="group sch-only" id="alignGroup">
     <span class="group-label">Align</span>
@@ -86,7 +86,10 @@
 
   <svg id="bbCanvas" xmlns="http://www.w3.org/2000/svg" style="display:none">
     <g id="bbContent"></g>
+    <g id="bbGhost"></g>
   </svg>
+
+  <div id="bbTray" class="bb-only" hidden></div>
 
   <div id="bbEmpty" class="bb-only" hidden>
     <b>No breadboard plan yet.</b><br>
@@ -98,8 +101,11 @@
   <div id="warnings" hidden></div>
 
   <div id="bbHint" class="bb-only">
-    Drag or wheel = pan / zoom &nbsp;·&nbsp; <b>point at a hole, lead or wire</b> =
-    light up everything connected to it &nbsp;·&nbsp; <b>F</b> fit
+    <b>Drag</b> parts, leads and wire ends onto holes &nbsp;·&nbsp;
+    <b>drag from a free hole</b> = new wire &nbsp;·&nbsp;
+    <b>R</b> turn around &nbsp;·&nbsp; <b>Del</b> remove &nbsp;·&nbsp;
+    <b>Ctrl+Z</b> undo &nbsp;·&nbsp; <b>Space</b>/middle-drag or empty space = pan &nbsp;·&nbsp;
+    point at anything = light up its connection
   </div>
 
   <div id="hint" class="sch-only">
